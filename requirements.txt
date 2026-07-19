@@ -2,7 +2,9 @@ fastapi==0.139.2
 gitpython==3.1.52
 openai==1.98.0
 pydantic==2.11.7
-qdrant-client==1.15.1
+qdrant-client==1.18.3
 requests==2.34.2
-sentence-transformers==5.6.0
+sentence-transformers==3.0.1
+transformers==4.44.2
 uvicorn==0.35.0
+
