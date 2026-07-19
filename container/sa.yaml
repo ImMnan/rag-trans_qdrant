@@ -1,0 +1,10 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rag-gateway-ksa
+  namespace: hawk
+  annotations:
+    iam.gke.io/gcp-service-account: support-sales@appspot.gserviceaccount.com
+
+## THIS is yet to be done, pernding with approval,
+### hence can't use GCS Fuse CSI driver to mount the GCS bucket in the deployment.
