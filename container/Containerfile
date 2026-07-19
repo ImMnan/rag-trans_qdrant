@@ -1,65 +1,33 @@
-# syntax=docker/dockerfile:1.7
+# ==========================================
+# PRODUCTION BASE: Lean CPU Runtime
+# ==========================================
+FROM python:3.11-slim AS runtime
 
-# STAGE 1: Build & Dependency Isolation
-FROM python:3.13-slim-bookworm AS builder
-
-# Prevent Python from writing .pyc files and enable unbuffered logging
+# Set execution flags for stability and unbuffered real-time logs
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PIP_ROOT_USER_ACTION=ignore
+    HF_HOME="/app/.cache/huggingface" \
+    MODEL_DIR="/models/intfloat-multilingual-e5-large"
 
 WORKDIR /app
 
-# Install system dependencies required for building wheels (if any)
+# Install only minimal OS dependencies needed at runtime
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && apt-get upgrade -y \
-    && apt-get clean \
+    git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install python dependencies into a local directory
+# Copy and install pinned versions compatible with torch 2.4.1
 COPY requirements.txt .
-RUN python -m venv /opt/venv
-ENV PATH="/opt/venv/bin:$PATH"
-RUN pip install --upgrade pip setuptools wheel && \
-    pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy your complete pure-cluster Python backend script
+COPY rag_fastapi.py .
 
-# STAGE 2: Final Lean Runtime Image
-FROM python:3.13-slim-bookworm AS runtime
+# Path reserved for external model mount (for example, GCS Fuse)
+RUN mkdir -p /models /app/.cache/huggingface
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PATH="/opt/venv/bin:$PATH"
-
-WORKDIR /app
-
-# Create non-root user for security
-RUN apt-get update && apt-get upgrade -y \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/* \
-    && groupadd -r appuser \
-    && useradd -r -g appuser -d /app -s /usr/sbin/nologin appuser
-
-# Copy installed libraries from the builder stage
-COPY --from=builder /opt/venv /opt/venv
-
-# Copy application source code
-COPY rag-fastApi.py .
-
-# Set proper permissions
-RUN chown -R appuser:appuser /app /opt/venv
-
-# Switch to non-root user
-USER appuser
-
-# Expose FastAPI default production port
+# Expose internal FastAPI gateway port
 EXPOSE 8000
 
-# Run with Uvicorn utilizing production workers
-# --workers 4 scales across multi-core setups inside your K8s cluster limits
-CMD ["uvicorn", "rag-fastApi:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
+# Execute the web API using Uvicorn worker threads
+CMD ["uvicorn", "rag_fastapi:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
