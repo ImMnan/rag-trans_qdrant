@@ -1,4 +1,20 @@
 # ==========================================
+# BUILD STAGE: Compile dependencies
+# ==========================================
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# Install build tools for compiled packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and pre-compile wheels (saves space in runtime image)
+COPY requirements.txt .
+RUN pip install --user --no-cache-dir -r requirements.txt
+
+# ==========================================
 # PRODUCTION BASE: Lean CPU Runtime
 # ==========================================
 FROM python:3.11-slim AS runtime
@@ -6,8 +22,8 @@ FROM python:3.11-slim AS runtime
 # Set execution flags for stability and unbuffered real-time logs
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    HF_HOME="/app/.cache/huggingface" \
-    MODEL_DIR="/models/intfloat-multilingual-e5-large"
+    HF_HOME="/models" \
+    MODEL_DIR="/models"
 
 WORKDIR /app
 
@@ -16,15 +32,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy and install pinned versions compatible with torch 2.4.1
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy pre-built wheels and packages from builder
+COPY --from=builder /root/.local /root/.local
+
+# Set PATH to use local pip packages
+ENV PATH=/root/.local/bin:$PATH
 
 # Copy your complete pure-cluster Python backend script
 COPY rag_fastapi.py .
 
-# Path reserved for external model mount (for example, GCS Fuse)
-RUN mkdir -p /models /app/.cache/huggingface
+# Path reserved for external model mount (for PVC or GCS Fuse)
+RUN mkdir -p /models
 
 # Expose internal FastAPI gateway port
 EXPOSE 8000

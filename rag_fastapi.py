@@ -33,6 +33,7 @@ CODE_COLLECTION   = os.getenv("CODE_COLLECTION",   "code_chunks")
 class RAGRequest(BaseModel):
     query_text: str
     repo_id: str
+    type: str | None = None
     limit: int = 5
 
 
@@ -80,30 +81,49 @@ async def execute_rag_pipeline(request: RAGRequest):
         change_context = "\n---\n".join(change_chunks) if change_chunks else "No change data found."
         code_context   = "\n---\n".join(code_chunks)   if code_chunks   else "No source context found."
 
-        # D. Structured prompt: summary, user impact, security/perf analysis
-        system_prompt = (
+        # D. Prompt strategy:
+        # - type=standard -> structured release-note output via system prompt.
+        # - otherwise -> direct Q&A from retrieved context only.
+        is_standard_request = (request.type or "").strip().lower() == "standard"
+
+        standard_system_prompt = (
             "You are a senior engineer producing release-note summaries. "
             "Use only the provided context. Structure your answer with these sections:\n"
-            "1. **What Changed** – describe the commits/diffs concisely.\n"
-            "2. **User Impact** – explain what end-users will notice or need to act on.\n"
-            "3. **Security & Performance** – flag any security fixes or performance optimisations; "
+            "1. **What Changed** - describe the commits/diffs concisely.\n"
+            "2. **User Impact** - explain what end-users will notice or need to act on.\n"
+            "3. **Security & Performance** - flag any security fixes or performance optimizations; "
             "write 'None identified' if absent."
         )
-        user_prompt = (
+        standard_user_prompt = (
             f"## Diff / Change Hunks\n{change_context}\n\n"
             f"## Source / Doc Reference\n{code_context}\n\n"
             f"## Request\n{request.query_text}"
         )
-
-        # E. Request generation from vLLM
-        response = llm_client.chat.completions.create(
-            model=MODEL_NAME,
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user",   "content": user_prompt},
-            ],
-            temperature=0.3,
+        direct_user_prompt = (
+            "Answer the user question using only the context below. "
+            "Be concise and factual. If asked whether a feature is supported, answer with 'Yes' or 'No' "
+            "and include when it first appears in the provided context if available; "
+            "otherwise say 'Unknown based on provided context'.\n\n"
+            f"## Diff / Change Hunks\n{change_context}\n\n"
+            f"## Source / Doc Reference\n{code_context}\n\n"
+            f"## Question\n{request.query_text}"
         )
+
+        if is_standard_request:
+            response = llm_client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[
+                    {"role": "system", "content": standard_system_prompt},
+                    {"role": "user", "content": standard_user_prompt},
+                ],
+                temperature=0.3,
+            )
+        else:
+            response = llm_client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=[{"role": "user", "content": direct_user_prompt}],
+                temperature=0.1,
+            )
         return {
             "answer": response.choices[0].message.content,
             "sources": {
