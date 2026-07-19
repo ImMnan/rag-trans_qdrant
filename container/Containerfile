@@ -1,0 +1,65 @@
+# syntax=docker/dockerfile:1.7
+
+# STAGE 1: Build & Dependency Isolation
+FROM python:3.13-slim-bookworm AS builder
+
+# Prevent Python from writing .pyc files and enable unbuffered logging
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_ROOT_USER_ACTION=ignore
+
+WORKDIR /app
+
+# Install system dependencies required for building wheels (if any)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && apt-get upgrade -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install python dependencies into a local directory
+COPY requirements.txt .
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+RUN pip install --upgrade pip setuptools wheel && \
+    pip install -r requirements.txt
+
+
+# STAGE 2: Final Lean Runtime Image
+FROM python:3.13-slim-bookworm AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PATH="/opt/venv/bin:$PATH"
+
+WORKDIR /app
+
+# Create non-root user for security
+RUN apt-get update && apt-get upgrade -y \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    && groupadd -r appuser \
+    && useradd -r -g appuser -d /app -s /usr/sbin/nologin appuser
+
+# Copy installed libraries from the builder stage
+COPY --from=builder /opt/venv /opt/venv
+
+# Copy application source code
+COPY rag-fastApi.py .
+
+# Set proper permissions
+RUN chown -R appuser:appuser /app /opt/venv
+
+# Switch to non-root user
+USER appuser
+
+# Expose FastAPI default production port
+EXPOSE 8000
+
+# Run with Uvicorn utilizing production workers
+# --workers 4 scales across multi-core setups inside your K8s cluster limits
+CMD ["uvicorn", "rag-fastApi:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "4"]
