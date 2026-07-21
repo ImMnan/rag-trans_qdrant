@@ -1,51 +1,28 @@
 # ==========================================
-# BUILD STAGE: Compile dependencies
+# BUILD STAGE: Compile Go binary
+# Build context: repo root (docker build -f container/Containerfile .)
 # ==========================================
-FROM python:3.11-slim AS builder
+FROM golang:1.26 AS builder
 
 WORKDIR /build
 
-# Install build tools for compiled packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# Cache dependencies before copying source — layer is reused unless go.mod/go.sum change
+COPY rag-go/go.mod rag-go/go.sum ./
+RUN go mod download
 
-# Copy requirements and pre-compile wheels (saves space in runtime image)
-COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
+# Copy full module source including generated proto stubs
+COPY rag-go/ ./
+
+# Build a fully static binary — no libc dependency, safe for distroless
+RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
+    go build -ldflags="-s -w" -o /rag-server ./main/
 
 # ==========================================
-# PRODUCTION BASE: Lean CPU Runtime
+# RUNTIME: Minimal distroless image (~2MB base)
 # ==========================================
-FROM python:3.11-slim AS runtime
+FROM gcr.io/distroless/static-debian12:nonroot
 
-# Set execution flags for stability and unbuffered real-time logs
-ENV PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1 \
-    HF_HOME="/models" \
-    MODEL_DIR="/models"
+COPY --from=builder /rag-server /rag-server
 
-WORKDIR /app
+ENTRYPOINT ["/rag-server"]
 
-# Install only minimal OS dependencies needed at runtime
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy pre-built wheels and packages from builder
-COPY --from=builder /root/.local /root/.local
-
-# Set PATH to use local pip packages
-ENV PATH=/root/.local/bin:$PATH
-
-# Copy your complete pure-cluster Python backend script
-COPY rag_fastapi.py .
-
-# Path reserved for external model mount (for PVC or GCS Fuse)
-RUN mkdir -p /models
-
-# Expose internal FastAPI gateway port
-EXPOSE 8000
-
-# Execute the web API using Uvicorn worker threads
-CMD ["uvicorn", "rag_fastapi:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

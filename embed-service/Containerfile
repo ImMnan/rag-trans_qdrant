@@ -1,0 +1,52 @@
+# ==========================================
+# BUILD STAGE: Compile dependencies
+# ==========================================
+FROM python:3.11-slim AS builder
+
+WORKDIR /build
+
+# Install build tools for compiled packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements and pre-compile wheels (saves space in runtime image)
+COPY requirements.txt .
+RUN pip install --user --no-cache-dir -r requirements.txt
+
+# ==========================================
+# PRODUCTION BASE: Lean CPU Runtime
+# ==========================================
+FROM python:3.11-slim AS runtime
+
+# Set execution flags for stability and unbuffered real-time logs
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    HF_HOME="/models" \
+    MODEL_DIR="/models" \
+    TRANSFORMERS_OFFLINE=1 \
+    HF_DATASETS_OFFLINE=1
+
+WORKDIR /app
+
+# No extra OS packages needed at runtime
+
+# Copy pre-built wheels and packages from builder
+COPY --from=builder /root/.local /root/.local
+
+# Set PATH to use local pip packages
+ENV PATH=/root/.local/bin:$PATH
+
+# Copy your complete pure-cluster Python backend script
+COPY main.py .
+
+# Path reserved for external model mount (for PVC or GCS Fuse)
+RUN mkdir -p /models
+
+# Expose internal FastAPI gateway port
+EXPOSE 8000
+
+# Execute the web API using Uvicorn worker threads
+# Single worker: SentenceTransformer loads the model once via lifespan().
+# Scale horizontally via Deployment replicas, not uvicorn workers.
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "1"]
