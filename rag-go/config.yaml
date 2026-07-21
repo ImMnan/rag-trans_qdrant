@@ -1,0 +1,17 @@
+
+name: rag-go-standard
+
+spec: 
+- name: Blazemeter
+  teams: 
+    Titans:
+    - github.com/Blazemeter/helm-crane
+    - github.com/Blazemeter/crane-hook
+    
+- name: Hawk
+  teams: 
+    a&s:
+    - github.com/AkrutiRayon/Hawk-UI
+    manan: 
+    - github.com/ImMnan/helm-hawk
+    - github.com/ImMnan/hawk-go

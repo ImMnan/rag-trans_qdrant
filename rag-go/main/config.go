@@ -23,7 +23,7 @@ func loadConfig() config {
 		QdrantHost:       normalizeHostPort(getEnv("QDRANT_HOST", "qdrant-service"), 6334),
 		VLLMHost:         normalizeHostPort(getEnv("VLLM_HOST", "qwen-3-service"), 50051),
 		VLLMTransport:    getEnv("VLLM_TRANSPORT", "grpc"),
-		EmbedHost:        normalizeHostPort(getEnv("EMBED_SERVICE_HOST", "embed-e5-service"), 8000),
+		EmbedHost:        normalizeHostPort(getEnv("EMBED_SERVICE_HOST", "embed-e5-service"), 80),
 		ModelName:        getEnv("QWEN_MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct"),
 		ChangeCollection: getEnv("CHANGE_COLLECTION", "change_chunks"),
 		CodeCollection:   getEnv("CODE_COLLECTION", "code_chunks"),
