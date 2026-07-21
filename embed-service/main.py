@@ -12,7 +12,9 @@ async def lifespan(app: FastAPI):
     # Startup
     global embed_model
     model_name = os.getenv("EMBED_MODEL", "intfloat/multilingual-e5-large")
-    cache_folder = os.getenv("HF_HOME", "/models")
+    # HF_HUB_CACHE is the hub blob directory (models--org--name/); fall back to HF_HOME/hub
+    hf_home = os.getenv("HF_HOME", "/models")
+    cache_folder = os.getenv("HF_HUB_CACHE", os.path.join(hf_home, "hub"))
     print(f"Loading embedding model: {model_name} from cache: {cache_folder}")
     embed_model = SentenceTransformer(model_name, cache_folder=cache_folder)
     yield
