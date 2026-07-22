@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: rag-go-fiber
+  namespace: hawk
+spec:
+  ports:
+  - name: rag-go-http
+    port: 80
+    protocol: TCP
+    targetPort: 8080
+  # The label selector should match the deployment labels & it is useful for prefix caching feature
+  selector:
+    app: rag-go
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: rag-go
+  namespace: hawk
+  labels:
+    app: rag-go
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: rag-go
+  template:
+    metadata:
+      labels:
+        app: rag-go
+    spec:
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      containers:
+      - name: rag-go-ctr
+        image: immnan/rag-go:0.1.2
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8080
+          name: rag-go-http
+        env:
+        - name: QDRANT_HOST
+          value: "qdrant-service.hawk.svc.cluster.local:6334"
+        - name: VLLM_HOST
+          value: "qwen-3-service.hawk.svc.cluster.local:4232"
+        - name: VLLM_TRANSPORT
+          value: "grpc"
+        - name: EMBED_SERVICE_HOST
+          value: "embed-e5-service:80"
+        - name: QWEN_MODEL_NAME
+          value: "Qwen/Qwen2.5-7B-Instruct"
+        - name: FIBER_PORT
+          value: ":8080"
+        - name: TRANSFORMERS_OFFLINE
+          value: "1"
+        - name: CODE_COLLECTION
+          value: "code_chunks"
+        - name: CHANGE_COLLECTION
+          value: "change_chunks"
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp         
+        resources:
+          requests:
+            cpu: "500m"
+            memory: 2Gi
+          limits:
+            cpu: "1"
+            memory: 4Gi  
