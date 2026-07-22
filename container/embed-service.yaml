@@ -1,0 +1,105 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: embed-e5-service
+  namespace: hawk
+spec:
+  ports:
+  - name: embed-http
+    port: 80
+    protocol: TCP
+    targetPort: 8000
+  # The label selector should match the deployment labels & it is useful for prefix caching feature
+  selector:
+    app: embed-e5large
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: embed-e5large
+  namespace: hawk
+  labels:
+    app: embed-e5large
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: embed-e5large
+  template:
+    metadata:
+      labels:
+        app: embed-e5large
+    spec:
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: embed-e5large-cache
+      initContainers:
+      - name: download-models
+        image: python:3.11-slim
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: token
+        command:
+          - sh
+          - -c
+          - |
+            pip install -q huggingface_hub && \
+            python -c "
+            from huggingface_hub import snapshot_download
+            snapshot_download('intfloat/multilingual-e5-large', cache_dir='/models')
+            "
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models
+      containers:
+      - name: e5large
+        image: immnan/embed-e5large-py:0.1.1
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+          name: embed-http
+        env:
+        - name: QDRANT_INTERNAL_URL
+          value: "qdrant-service.hawk.svc.cluster.local"
+        - name: VLLM_INTERNAL_URL
+          value: "qwen-3-service.hawk.svc.cluster.local"
+        - name: QWEN_MODEL_NAME
+          value: "Qwen/Qwen2.5-7B-Instruct"
+        # Paths inside the container that map to the GCS bucket
+        - name: HF_HOME
+          value: "/models"
+        - name: TRANSFORMERS_OFFLINE
+          value: "1"
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+        - name: model-cache
+          mountPath: /models          
+        resources:
+          requests:
+            cpu: "1"
+            memory: 4Gi
+          limits:
+            cpu: "2"
+            memory: 8Gi  
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: embed-e5large-cache
+  namespace: hawk
+spec:
+  storageClassName: premium-rwo
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi

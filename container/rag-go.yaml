@@ -47,8 +47,6 @@ spec:
           value: "qdrant-service.hawk.svc.cluster.local:6334"
         - name: VLLM_HOST
           value: "qwen-3-service.hawk.svc.cluster.local:80"
-        - name: VLLM_TRANSPORT
-          value: "http"
         - name: EMBED_SERVICE_HOST
           value: "embed-e5-service:80"
         - name: QWEN_MODEL_NAME

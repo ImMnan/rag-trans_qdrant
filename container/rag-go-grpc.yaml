@@ -37,7 +37,7 @@ spec:
         emptyDir: {}
       containers:
       - name: rag-go-ctr
-        image: immnan/rag-go:0.1.2
+        image: immnan/rag-go:0.2.1
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
@@ -46,9 +46,7 @@ spec:
         - name: QDRANT_HOST
           value: "qdrant-service.hawk.svc.cluster.local:6334"
         - name: VLLM_HOST
-          value: "qwen-3-service.hawk.svc.cluster.local:4232"
-        - name: VLLM_TRANSPORT
-          value: "grpc"
+          value: "qwen-3-service.hawk.svc.cluster.local:80"
         - name: EMBED_SERVICE_HOST
           value: "embed-e5-service:80"
         - name: QWEN_MODEL_NAME
