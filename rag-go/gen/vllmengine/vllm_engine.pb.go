@@ -7,12 +7,13 @@
 package vllmengine
 
 import (
-	smgcommon "github.com/immnan/rag-trans_qdrant/rag-go/gen/smgcommon"
-	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
-	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 	reflect "reflect"
 	sync "sync"
 	unsafe "unsafe"
+
+	smgcommon "github.com/immnan/rag-trans_qdrant/rag-go/gen/smgcommon"
+	protoreflect "google.golang.org/protobuf/reflect/protoreflect"
+	protoimpl "google.golang.org/protobuf/runtime/protoimpl"
 )
 
 const (
@@ -1342,6 +1343,7 @@ type GenerateComplete struct {
 	PromptTokens     uint32                 `protobuf:"varint,3,opt,name=prompt_tokens,json=promptTokens,proto3" json:"prompt_tokens,omitempty"`
 	CompletionTokens uint32                 `protobuf:"varint,4,opt,name=completion_tokens,json=completionTokens,proto3" json:"completion_tokens,omitempty"`
 	CachedTokens     uint32                 `protobuf:"varint,5,opt,name=cached_tokens,json=cachedTokens,proto3" json:"cached_tokens,omitempty"`
+	OutputText       string                 `protobuf:"bytes,13,opt,name=output_text,json=outputText,proto3" json:"output_text,omitempty"` // Server-decoded text output
 	// Logprobs support
 	OutputLogprobs *OutputLogProbs `protobuf:"bytes,6,opt,name=output_logprobs,json=outputLogprobs,proto3" json:"output_logprobs,omitempty"`
 	InputLogprobs  *InputLogProbs  `protobuf:"bytes,7,opt,name=input_logprobs,json=inputLogprobs,proto3" json:"input_logprobs,omitempty"`
@@ -1428,6 +1430,13 @@ func (x *GenerateComplete) GetCachedTokens() uint32 {
 		return x.CachedTokens
 	}
 	return 0
+}
+
+func (x *GenerateComplete) GetOutputText() string {
+	if x != nil {
+		return x.OutputText
+	}
+	return ""
 }
 
 func (x *GenerateComplete) GetOutputLogprobs() *OutputLogProbs {
@@ -2509,14 +2518,16 @@ const file_vllmengine_vllm_engine_proto_rawDesc = "" +
 	"\rcached_tokens\x18\x04 \x01(\rR\fcachedTokens\x12I\n" +
 	"\x0foutput_logprobs\x18\x05 \x01(\v2 .vllm.grpc.engine.OutputLogProbsR\x0eoutputLogprobs\x12F\n" +
 	"\x0einput_logprobs\x18\x06 \x01(\v2\x1f.vllm.grpc.engine.InputLogProbsR\rinputLogprobs\x12\x14\n" +
-	"\x05index\x18\a \x01(\rR\x05index\"\x88\x05\n" +
+	"\x05index\x18\a \x01(\rR\x05index\"\xa9\x05\n" +
 	"\x10GenerateComplete\x12\x1d\n" +
 	"\n" +
 	"output_ids\x18\x01 \x03(\rR\toutputIds\x12#\n" +
 	"\rfinish_reason\x18\x02 \x01(\tR\ffinishReason\x12#\n" +
 	"\rprompt_tokens\x18\x03 \x01(\rR\fpromptTokens\x12+\n" +
 	"\x11completion_tokens\x18\x04 \x01(\rR\x10completionTokens\x12#\n" +
-	"\rcached_tokens\x18\x05 \x01(\rR\fcachedTokens\x12I\n" +
+	"\rcached_tokens\x18\x05 \x01(\rR\fcachedTokens\x12\x1f\n" +
+	"\voutput_text\x18\r \x01(\tR\n" +
+	"outputText\x12I\n" +
 	"\x0foutput_logprobs\x18\x06 \x01(\v2 .vllm.grpc.engine.OutputLogProbsR\x0eoutputLogprobs\x12F\n" +
 	"\x0einput_logprobs\x18\a \x01(\v2\x1f.vllm.grpc.engine.InputLogProbsR\rinputLogprobs\x12\x14\n" +
 	"\x05index\x18\b \x01(\rR\x05index\x12P\n" +
