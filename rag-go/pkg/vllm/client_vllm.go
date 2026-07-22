@@ -1,19 +1,30 @@
 package vllm
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rs/zerolog"
+	"github.com/sugarme/tokenizer"
+	"github.com/sugarme/tokenizer/pretrained"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
-	vllmpb "github.com/immnan/rag-trans_qdrant/rag-go/gen/vllm"
+	smgcommon "github.com/immnan/rag-trans_qdrant/rag-go/gen/smgcommon"
+	vllmengine "github.com/immnan/rag-trans_qdrant/rag-go/gen/vllmengine"
 	"github.com/immnan/rag-trans_qdrant/rag-go/pkg/pipeline"
 )
 
@@ -40,9 +51,12 @@ type chatResponse struct {
 
 // GRPCClient calls vLLM via its native gRPC Generate service.
 type GRPCClient struct {
-	grpc      vllmpb.GenerateClient
+	grpc      vllmengine.VllmEngineClient
 	modelName string
 	log       zerolog.Logger
+
+	tokenizerMu sync.RWMutex
+	tokenizer   *tokenizer.Tokenizer
 }
 
 func NewGRPCClient(host string, modelName string, log zerolog.Logger) *GRPCClient {
@@ -51,35 +65,222 @@ func NewGRPCClient(host string, modelName string, log zerolog.Logger) *GRPCClien
 		log.Error().Err(err).Str("host", host).Msg("vllm gRPC connection failed")
 	}
 	return &GRPCClient{
-		grpc:      vllmpb.NewGenerateClient(conn),
+		grpc:      vllmengine.NewVllmEngineClient(conn),
 		modelName: modelName,
 		log:       log,
 	}
 }
 
-// Complete applies the Qwen2.5 chat template and calls vLLM via gRPC.
+// Complete applies the chat template and calls vLLM Engine gRPC Generate stream.
 func (c *GRPCClient) Complete(ctx context.Context, messages []pipeline.Message) (string, error) {
 	temperature := inferTemperature(messages)
+	maxTokens := uint32(2048)
 
-	req := &vllmpb.GenerateRequest{
-		Model:       c.modelName,
-		Prompt:      &vllmpb.GenerateRequest_Text{Text: formatQwenPrompt(messages)},
-		Temperature: &temperature,
-		Stopping:    &vllmpb.StoppingCriteria{MaxNewTokens: 2048},
-		Response:    &vllmpb.ResponseOptions{OutputText: boolPtr(true)},
+	req := &vllmengine.GenerateRequest{
+		RequestId: fmt.Sprintf("rag-go-%d", time.Now().UnixNano()),
+		Input:     &vllmengine.GenerateRequest_Text{Text: formatQwenPrompt(messages)},
+		Stream:    false,
+		SamplingParams: &vllmengine.SamplingParams{
+			Temperature: &temperature,
+			MaxTokens:   &maxTokens,
+			N:           1,
+		},
 	}
 
-	resp, err := c.grpc.Generate(ctx, req)
+	stream, err := c.grpc.Generate(ctx, req)
 	if err != nil {
 		return "", fmt.Errorf("vllm grpc generate: %w", err)
 	}
-	if resp.Outputs == nil {
-		return "", fmt.Errorf("vllm returned nil output")
+
+	var completion *vllmengine.GenerateComplete
+	for {
+		resp, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			return "", fmt.Errorf("vllm grpc stream recv: %w", recvErr)
+		}
+
+		if complete := resp.GetComplete(); complete != nil {
+			completion = complete
+		}
 	}
 
-	answer := resp.Outputs.Text
-	c.log.Debug().Int("response_len", len(answer)).Uint32("tokens", resp.Outputs.NumTokens).Msg("vllm grpc completion received")
+	if completion == nil {
+		return "", fmt.Errorf("vllm returned no completion payload")
+	}
+
+	answer := c.decodeOutput(ctx, completion.OutputIds)
+	c.log.Debug().
+		Int("response_len", len(answer)).
+		Int("tokens", len(completion.OutputIds)).
+		Str("finish_reason", completion.FinishReason).
+		Msg("vllm grpc completion received")
 	return answer, nil
+}
+
+func (c *GRPCClient) decodeOutput(ctx context.Context, ids []uint32) string {
+	if len(ids) == 0 {
+		return ""
+	}
+
+	tk, err := c.getOrInitTokenizer(ctx)
+	if err != nil {
+		c.log.Warn().Err(err).Msg("vllm tokenizer unavailable; falling back to token ID output")
+		return tokenIDsToText(ids)
+	}
+
+	intIDs := make([]int, len(ids))
+	for i, id := range ids {
+		intIDs[i] = int(id)
+	}
+
+	decoded := strings.TrimSpace(tk.Decode(intIDs, true))
+	if decoded == "" {
+		c.log.Warn().Msg("vllm tokenizer produced empty decode; falling back to token IDs")
+		return tokenIDsToText(ids)
+	}
+
+	return decoded
+}
+
+func (c *GRPCClient) getOrInitTokenizer(ctx context.Context) (*tokenizer.Tokenizer, error) {
+	c.tokenizerMu.RLock()
+	if c.tokenizer != nil {
+		tk := c.tokenizer
+		c.tokenizerMu.RUnlock()
+		return tk, nil
+	}
+	c.tokenizerMu.RUnlock()
+
+	c.tokenizerMu.Lock()
+	defer c.tokenizerMu.Unlock()
+	if c.tokenizer != nil {
+		return c.tokenizer, nil
+	}
+
+	stream, err := c.grpc.GetTokenizer(ctx, &smgcommon.GetTokenizerRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("get tokenizer stream: %w", err)
+	}
+
+	var zipData bytes.Buffer
+	var serverSHA string
+
+	for {
+		chunk, recvErr := stream.Recv()
+		if recvErr == io.EOF {
+			break
+		}
+		if recvErr != nil {
+			return nil, fmt.Errorf("receive tokenizer chunk: %w", recvErr)
+		}
+
+		if _, writeErr := zipData.Write(chunk.GetData()); writeErr != nil {
+			return nil, fmt.Errorf("buffer tokenizer chunk: %w", writeErr)
+		}
+
+		if sha := strings.TrimSpace(chunk.GetSha256()); sha != "" {
+			serverSHA = sha
+		}
+	}
+
+	if zipData.Len() == 0 {
+		return nil, fmt.Errorf("tokenizer payload was empty")
+	}
+
+	if serverSHA != "" {
+		sum := sha256.Sum256(zipData.Bytes())
+		localSHA := hex.EncodeToString(sum[:])
+		if !strings.EqualFold(localSHA, serverSHA) {
+			return nil, fmt.Errorf("tokenizer sha256 mismatch: got %s want %s", localSHA, serverSHA)
+		}
+	}
+
+	workDir, err := os.MkdirTemp("", "rag-go-vllm-tokenizer-")
+	if err != nil {
+		return nil, fmt.Errorf("create tokenizer temp dir: %w", err)
+	}
+
+	tokenizerPath, err := unzipTokenizerArtifact(zipData.Bytes(), workDir)
+	if err != nil {
+		return nil, err
+	}
+
+	tk, err := pretrained.FromFile(tokenizerPath)
+	if err != nil {
+		return nil, fmt.Errorf("load tokenizer from %s: %w", tokenizerPath, err)
+	}
+
+	c.tokenizer = tk
+	c.log.Info().Str("tokenizer_path", tokenizerPath).Msg("initialized vllm tokenizer for gRPC decode")
+	return tk, nil
+}
+
+func unzipTokenizerArtifact(zipBytes []byte, destDir string) (string, error) {
+	reader, err := zip.NewReader(bytes.NewReader(zipBytes), int64(len(zipBytes)))
+	if err != nil {
+		return "", fmt.Errorf("open tokenizer zip: %w", err)
+	}
+
+	var tokenizerPath string
+	for _, f := range reader.File {
+		cleanName := filepath.Clean(f.Name)
+		if cleanName == "." || strings.HasPrefix(cleanName, "..") {
+			continue
+		}
+
+		targetPath := filepath.Join(destDir, cleanName)
+		if !strings.HasPrefix(targetPath, destDir+string(os.PathSeparator)) && targetPath != destDir {
+			continue
+		}
+
+		if f.FileInfo().IsDir() {
+			if mkErr := os.MkdirAll(targetPath, 0o755); mkErr != nil {
+				return "", fmt.Errorf("create tokenizer dir: %w", mkErr)
+			}
+			continue
+		}
+
+		if mkErr := os.MkdirAll(filepath.Dir(targetPath), 0o755); mkErr != nil {
+			return "", fmt.Errorf("create tokenizer parent dir: %w", mkErr)
+		}
+
+		src, openErr := f.Open()
+		if openErr != nil {
+			return "", fmt.Errorf("open tokenizer zip entry: %w", openErr)
+		}
+
+		dst, createErr := os.Create(targetPath)
+		if createErr != nil {
+			src.Close()
+			return "", fmt.Errorf("create tokenizer file: %w", createErr)
+		}
+
+		_, copyErr := io.Copy(dst, src)
+		closeDstErr := dst.Close()
+		closeSrcErr := src.Close()
+		if copyErr != nil {
+			return "", fmt.Errorf("write tokenizer file: %w", copyErr)
+		}
+		if closeDstErr != nil {
+			return "", fmt.Errorf("finalize tokenizer file: %w", closeDstErr)
+		}
+		if closeSrcErr != nil {
+			return "", fmt.Errorf("close tokenizer zip entry: %w", closeSrcErr)
+		}
+
+		if filepath.Base(targetPath) == "tokenizer.json" && tokenizerPath == "" {
+			tokenizerPath = targetPath
+		}
+	}
+
+	if tokenizerPath == "" {
+		return "", fmt.Errorf("tokenizer.json not found in tokenizer artifact")
+	}
+
+	return tokenizerPath, nil
 }
 
 // ── HTTP client ───────────────────────────────────────────────────────────────
@@ -176,4 +377,15 @@ func formatQwenPrompt(messages []pipeline.Message) string {
 	return sb.String()
 }
 
-func boolPtr(b bool) *bool { return &b }
+func tokenIDsToText(ids []uint32) string {
+	if len(ids) == 0 {
+		return ""
+	}
+
+	parts := make([]string, len(ids))
+	for i, id := range ids {
+		parts[i] = strconv.FormatUint(uint64(id), 10)
+	}
+
+	return "TOKENS[" + strings.Join(parts, " ") + "]"
+}
