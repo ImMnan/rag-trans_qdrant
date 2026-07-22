@@ -5,17 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
-	"strings"
 	"time"
 
-	"github.com/rs/zerolog"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
-
-	vllmengine "github.com/immnan/rag-trans_qdrant/rag-go/gen/vllmengine"
 	"github.com/immnan/rag-trans_qdrant/rag-go/pkg/pipeline"
+	"github.com/rs/zerolog"
 )
 
 // ── Shared HTTP types (used by HTTPClient) ────────────────────────────────────
@@ -35,80 +29,6 @@ type chatResponse struct {
 	Choices []struct {
 		Message chatMessage `json:"message"`
 	} `json:"choices"`
-}
-
-// ── gRPC client ───────────────────────────────────────────────────────────────
-
-// GRPCClient calls vLLM via its native gRPC Generate service.
-type GRPCClient struct {
-	grpc      vllmengine.VllmEngineClient
-	modelName string
-	log       zerolog.Logger
-}
-
-func NewGRPCClient(host string, modelName string, log zerolog.Logger) *GRPCClient {
-	conn, err := grpc.NewClient(host, grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		log.Error().Err(err).Str("host", host).Msg("vllm gRPC connection failed")
-	}
-	return &GRPCClient{
-		grpc:      vllmengine.NewVllmEngineClient(conn),
-		modelName: modelName,
-		log:       log,
-	}
-}
-
-// Complete applies the chat template and calls vLLM Engine gRPC Generate stream.
-func (c *GRPCClient) Complete(ctx context.Context, messages []pipeline.Message) (string, error) {
-	temperature := inferTemperature(messages)
-	maxTokens := uint32(2048)
-
-	req := &vllmengine.GenerateRequest{
-		RequestId: fmt.Sprintf("rag-go-%d", time.Now().UnixNano()),
-		Input:     &vllmengine.GenerateRequest_Text{Text: formatQwenPrompt(messages)},
-		Stream:    false,
-		SamplingParams: &vllmengine.SamplingParams{
-			Temperature: &temperature,
-			MaxTokens:   &maxTokens,
-			N:           1,
-		},
-	}
-
-	stream, err := c.grpc.Generate(ctx, req)
-	if err != nil {
-		return "", fmt.Errorf("vllm grpc generate: %w", err)
-	}
-
-	var completion *vllmengine.GenerateComplete
-	for {
-		resp, recvErr := stream.Recv()
-		if recvErr == io.EOF {
-			break
-		}
-		if recvErr != nil {
-			return "", fmt.Errorf("vllm grpc stream recv: %w", recvErr)
-		}
-
-		if complete := resp.GetComplete(); complete != nil {
-			completion = complete
-		}
-	}
-
-	if completion == nil {
-		return "", fmt.Errorf("vllm returned no completion payload")
-	}
-
-	answer := strings.TrimSpace(completion.GetOutputText())
-	if answer == "" {
-		return "", fmt.Errorf("vllm completion missing output_text; server-side decode not enabled")
-	}
-
-	c.log.Debug().
-		Int("response_len", len(answer)).
-		Int("tokens", len(completion.OutputIds)).
-		Str("finish_reason", completion.FinishReason).
-		Msg("vllm grpc completion received")
-	return answer, nil
 }
 
 // ── HTTP client ───────────────────────────────────────────────────────────────
@@ -188,19 +108,4 @@ func inferTemperature(messages []pipeline.Message) float32 {
 		return 0.3
 	}
 	return 0.1
-}
-
-// formatQwenPrompt applies the Qwen2.5 chat template to a message slice.
-// Used by the gRPC client since vLLM's gRPC API takes raw text, not chat messages.
-func formatQwenPrompt(messages []pipeline.Message) string {
-	var sb strings.Builder
-	for _, m := range messages {
-		sb.WriteString("<|im_start|>")
-		sb.WriteString(m.Role)
-		sb.WriteString("\n")
-		sb.WriteString(m.Content)
-		sb.WriteString("<|im_end|>\n")
-	}
-	sb.WriteString("<|im_start|>assistant\n")
-	return sb.String()
 }

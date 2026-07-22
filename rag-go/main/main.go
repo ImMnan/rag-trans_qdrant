@@ -30,23 +30,14 @@ func main() {
 		Str("port", cfg.FiberPort).
 		Str("qdrant_host", cfg.QdrantHost).
 		Str("vllm_host", cfg.VLLMHost).
-		Str("vllm_transport", cfg.VLLMTransport).
 		Str("embed_host", cfg.EmbedHost).
 		Msg("starting rag-go service")
 
 	// --- Clients ---
 	qdrantClient := qdrant.NewClient(cfg.QdrantHost, log.Logger)
 	embedClient := embedder.NewClient(buildHTTPURL(cfg.EmbedHost), log.Logger)
-
-	var vllmClient pipeline.VLLMCompleter
-	switch cfg.VLLMTransport {
-	case "http":
-		log.Info().Str("url", buildHTTPURL(cfg.VLLMHost)).Msg("vllm transport: http")
-		vllmClient = vllm.NewHTTPClient(buildHTTPURL(cfg.VLLMHost), cfg.ModelName, log.Logger)
-	default:
-		log.Info().Str("host", cfg.VLLMHost).Msg("vllm transport: grpc")
-		vllmClient = vllm.NewGRPCClient(cfg.VLLMHost, cfg.ModelName, log.Logger)
-	}
+	log.Info().Str("url", buildHTTPURL(cfg.VLLMHost)).Msg("vllm transport: http")
+	vllmClient := vllm.NewHTTPClient(buildHTTPURL(cfg.VLLMHost), cfg.ModelName, log.Logger)
 
 	// --- Pipeline ---
 	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection)
