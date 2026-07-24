@@ -66,7 +66,8 @@ func main() {
 	}()
 
 	// --- Listen ---
-	if err := app.Listen(cfg.FiberPort); err != nil {
+	portNumber := normalizeListenAddr(cfg.FiberPort)
+	if err := app.Listen(portNumber); err != nil {
 		log.Fatal().Err(err).Msg("fiber listen error")
 	}
 

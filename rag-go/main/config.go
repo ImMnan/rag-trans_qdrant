@@ -18,7 +18,7 @@ type config struct {
 
 func loadConfig() config {
 	return config{
-		FiberPort:        getEnv("FIBER_PORT", ":8080"),
+		FiberPort:        getEnv("FIBER_PORT", "8080"),
 		QdrantHost:       normalizeHostPort(getEnv("QDRANT_HOST", "qdrant-service"), 6334),
 		VLLMHost:         normalizeHostPort(getEnv("VLLM_HOST", "qwen-3-service"), 80),
 		EmbedHost:        normalizeHostPort(getEnv("EMBED_SERVICE_HOST", "embed-e5-service"), 80),
@@ -47,6 +47,17 @@ func buildHTTPURL(hostPort string) string {
 		return hostPort
 	}
 	return "http://" + hostPort
+}
+
+func normalizeListenAddr(port string) string {
+	port = strings.TrimSpace(port)
+	if port == "" {
+		return ":8080"
+	}
+	if strings.HasPrefix(port, ":") {
+		return port
+	}
+	return ":" + port
 }
 
 func getEnv(key, fallback string) string {
