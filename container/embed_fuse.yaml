@@ -44,23 +44,31 @@ spec:
     metadata:
       labels:
         app: embed-e5large
-      annotations:
-        # Injects the GCS Fuse sidecar (requires GKE Workload Identity + the
-        # Cloud Storage FUSE CSI driver add-on enabled on the cluster).
-        gke-gcsfuse/volumes: "true"
     spec:
       serviceAccountName: rag-gateway-ksa
-      automountServiceAccountToken: true      
+      automountServiceAccountToken: true
       volumes:
       - name: tmp
         emptyDir: {}
-      - name: gcs-fuse
-        csi:
-          driver: gcsfuse.csi.storage.gke.io
-          readOnly: true
-          volumeAttributes:
-            bucketName: "rag-model-weights-hawk"
-            mountOptions: "implicit-dirs,uid=1000,gid=1000"
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: embed-e5large-cache
+      initContainers:
+      - name: download-models-gcs
+        image: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
+        command:
+          - sh
+          - -c
+          - |
+            set -euo pipefail
+            mkdir -p /models/hub
+            # Sync the pre-uploaded HF hub cache from GCS into local PVC.
+            gcloud storage rsync -r gs://rag-model-weights-hawk/.cache/huggingface/hf-cache/hub /models/hub
+            test -d /models/hub/models--intfloat--multilingual-e5-large
+            ls -la /models/hub | head -n 40
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models
       containers:
       - name: e5large-ctr
         image: immnan/embed-e5large-py:0.2.3
@@ -72,9 +80,9 @@ spec:
         - name: EMBED_MODEL
           value: "intfloat/multilingual-e5-large"
         - name: HF_HOME
-          value: "/tmp/hf"
+          value: "/models"
         - name: HF_HUB_CACHE
-          value: "/mnt/gcs/.cache/huggingface/hf-cache/hub"
+          value: "/models/hub"
         - name: TRANSFORMERS_CACHE
           value: /tmp/hf/transformers
         - name: HF_HUB_OFFLINE
@@ -85,8 +93,8 @@ spec:
         - name: tmp
           mountPath: /tmp
           readOnly: false
-        - name: gcs-fuse
-          mountPath: /mnt/gcs
+        - name: model-cache
+          mountPath: /models
           readOnly: true
         resources:
           requests:
@@ -97,4 +105,18 @@ spec:
             memory: 8Gi
       # Bind the pod to the KSA that is linked to a GSA with storage.objectViewer
       # (or storage.objectAdmin if you need writes) on the bucket.
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: embed-e5large-cache
+  namespace: hawk
+spec:
+  storageClassName: premium-rwo
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
       

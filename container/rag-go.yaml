@@ -37,7 +37,7 @@ spec:
         emptyDir: {}
       containers:
       - name: rag-go-ctr
-        image: immnan/rag-go:0.1.2
+        image: immnan/rag-gateway:0.3.0
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
