@@ -3,7 +3,6 @@ package pipeline
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 
 	"github.com/rs/zerolog"
@@ -52,6 +51,19 @@ type RAGPipeline struct {
 	log              zerolog.Logger
 }
 
+// RAGPipeline wires all downstream clients together.
+type DOCPipeline struct {
+	qdrant           QdrantQuerier
+	vllm             VLLMCompleter
+	embedder         Embedder
+	docProcessor     DocProcessor
+	changeCollection string
+	codeCollection   string
+	docCollection    string
+	genDocCollection string
+	log              zerolog.Logger
+}
+
 func New(
 	qdrant QdrantQuerier,
 	vllm VLLMCompleter,
@@ -69,9 +81,37 @@ func New(
 	}
 }
 
+func NewDoc(
+	qdrant QdrantQuerier,
+	vllm VLLMCompleter,
+	embedder Embedder,
+	changeCollection string,
+	codeCollection string,
+	docCollection string,
+	genDocCollection string,
+) *DOCPipeline {
+	docProcessor := NewLLMDocProcessor(vllm, NewDefaultDocDecisionEngine())
+
+	return &DOCPipeline{
+		qdrant:           qdrant,
+		vllm:             vllm,
+		embedder:         embedder,
+		docProcessor:     docProcessor,
+		changeCollection: changeCollection,
+		codeCollection:   codeCollection,
+		docCollection:    docCollection,
+		genDocCollection: genDocCollection,
+		log:              zerolog.Nop(),
+	}
+}
+
 func (p *RAGPipeline) WithLogger(log zerolog.Logger) *RAGPipeline {
 	p.log = log
 	return p
+}
+
+type Execution interface {
+	Execute(ctx context.Context, req Request) (*Response, error)
 }
 
 // Execute runs the full RAG pipeline for a single request.
@@ -82,7 +122,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		return nil, fmt.Errorf("embed: %w", err)
 	}
 
-	// 2. Fan-out: query both collections concurrently
+	// 2. Fan-out: query both the collections concurrently
 	type result struct {
 		chunks []string
 		err    error
@@ -91,7 +131,6 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	var wg sync.WaitGroup
 	changeCh := make(chan result, 1)
 	codeCh := make(chan result, 1)
-
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
@@ -133,44 +172,79 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	}, nil
 }
 
-// buildPrompt assembles the LLM messages from retrieved chunks.
-// Mirrors the two-mode prompt strategy from the original Python pipeline.
-func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
-	changeCtx := joinChunks(changeChunks, "No change data found.")
-	codeCtx := joinChunks(codeChunks, "No source context found.")
-
-	if strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
-		systemPrompt := "You are a senior engineer producing product release summaries. " +
-			"Use only the provided context. Structure your answer with these sections:\n" +
-			"1. **What Changed** - describe the commits/diffs concisely.\n" +
-			"2. **User Impact** - explain what end-users will notice or need to act on.\n" +
-			"3. **Security & Performance** - flag any security fixes or performance optimizations; " +
-			"write 'None identified' if absent."
-
-		userPrompt := fmt.Sprintf("## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s",
-			changeCtx, codeCtx, req.QueryText)
-
-		return []Message{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPrompt},
-		}
+func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, error) {
+	// 1. Embed the query once
+	vector, err := p.embedder.Embed(ctx, req.QueryText)
+	if err != nil {
+		return nil, fmt.Errorf("embed: %w", err)
 	}
 
-	directPrompt := fmt.Sprintf(
-		"Answer the user question using only the context below. "+
-			"Be concise and factual. If asked whether a feature is supported, answer with 'Yes' or 'No' "+
-			"and include when it first appears in the provided context if available; "+
-			"otherwise say 'Unknown based on provided context'.\n\n"+
-			"## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Question\n%s",
-		changeCtx, codeCtx, req.QueryText,
-	)
-
-	return []Message{{Role: "user", Content: directPrompt}}
-}
-
-func joinChunks(chunks []string, fallback string) string {
-	if len(chunks) == 0 {
-		return fallback
+	// 2. Fan-out: query both the collections concurrently
+	type result struct {
+		chunks []string
+		err    error
 	}
-	return strings.Join(chunks, "\n---\n")
+
+	var wg sync.WaitGroup
+	changeCh := make(chan result, 1)
+	codeCh := make(chan result, 1)
+	docCh := make(chan result, 1)
+	genDocCh := make(chan result, 1)
+	wg.Add(4)
+	go func() {
+		defer wg.Done()
+		chunks, err := p.qdrant.Query(ctx, p.changeCollection, vector, req.RepoID, req.Limit)
+		changeCh <- result{chunks, err}
+	}()
+	go func() {
+		defer wg.Done()
+		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, req.RepoID, req.Limit)
+		codeCh <- result{chunks, err}
+	}()
+
+	go func() {
+		defer wg.Done()
+		chunks, err := p.qdrant.Query(ctx, p.docCollection, vector, req.RepoID, req.Limit)
+		docCh <- result{chunks, err}
+	}()
+	go func() {
+		defer wg.Done()
+		chunks, err := p.qdrant.Query(ctx, p.genDocCollection, vector, req.RepoID, req.Limit)
+		genDocCh <- result{chunks, err}
+	}()
+	wg.Wait()
+
+	changeResult := <-changeCh
+	codeResult := <-codeCh
+	docResult := <-docCh
+	genDocResult := <-genDocCh
+
+	if changeResult.err != nil {
+		p.log.Warn().Err(changeResult.err).Str("collection", p.changeCollection).Msg("qdrant query failed")
+	}
+	if codeResult.err != nil {
+		p.log.Warn().Err(codeResult.err).Str("collection", p.codeCollection).Msg("qdrant query failed")
+	}
+	if docResult.err != nil {
+		p.log.Warn().Err(docResult.err).Str("collection", p.docCollection).Msg("qdrant query failed")
+	}
+	if genDocResult.err != nil {
+		p.log.Warn().Err(genDocResult.err).Str("collection", p.genDocCollection).Msg("qdrant query failed")
+	}
+
+	// 3. Run strong-confidence doc workflow (extract -> audit -> decide -> generate -> validate)
+	answer, err := p.docProcessor.Process(ctx, req, changeResult.chunks, codeResult.chunks, docResult.chunks, genDocResult.chunks)
+	if err != nil {
+		return nil, fmt.Errorf("doc workflow: %w", err)
+	}
+
+	return &Response{
+		Answer: answer,
+		Sources: map[string]int{
+			"change_chunks_retrieved":  len(changeResult.chunks),
+			"code_chunks_retrieved":    len(codeResult.chunks),
+			"doc_chunks_retrieved":     len(docResult.chunks),
+			"gen_doc_chunks_retrieved": len(genDocResult.chunks),
+		},
+	}, nil
 }
