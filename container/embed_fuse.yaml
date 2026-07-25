@@ -83,8 +83,6 @@ spec:
           value: "/models"
         - name: HF_HUB_CACHE
           value: "/models/hub"
-        - name: TRANSFORMERS_CACHE
-          value: /tmp/hf/transformers
         - name: HF_HUB_OFFLINE
           value: "1"
         - name: TRANSFORMERS_OFFLINE
