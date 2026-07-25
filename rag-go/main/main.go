@@ -41,6 +41,7 @@ func main() {
 
 	// --- Pipeline ---
 	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection)
+	docPipe := pipeline.NewDoc(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection, cfg.DocCollection, cfg.GenDocCollection)
 
 	// --- Fiber app ---
 	app := fiber.New(fiber.Config{
@@ -49,7 +50,7 @@ func main() {
 		IdleTimeout:  60 * time.Second,
 	})
 
-	handler.Register(app, pipe, log.Logger)
+	handler.Register(app, pipe, docPipe, log.Logger)
 
 	// --- Graceful shutdown ---
 	quit := make(chan os.Signal, 1)

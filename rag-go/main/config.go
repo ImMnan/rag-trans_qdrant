@@ -14,6 +14,8 @@ type config struct {
 	ModelName        string
 	ChangeCollection string
 	CodeCollection   string
+	DocCollection    string
+	GenDocCollection string
 }
 
 func loadConfig() config {
@@ -25,6 +27,8 @@ func loadConfig() config {
 		ModelName:        getEnv("QWEN_MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct"),
 		ChangeCollection: getEnv("CHANGE_COLLECTION", "change_chunks"),
 		CodeCollection:   getEnv("CODE_COLLECTION", "code_chunks"),
+		DocCollection:    getEnv("DOC_COLLECTION", "doc_chunks"),
+		GenDocCollection: getEnv("GEN_DOC_COLLECTION", "gen_doc_chunks"),
 	}
 }
 
