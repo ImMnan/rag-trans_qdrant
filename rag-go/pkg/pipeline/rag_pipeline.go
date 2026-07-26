@@ -14,7 +14,7 @@ type QdrantQuerier interface {
 }
 
 type VLLMCompleter interface {
-	Complete(ctx context.Context, messages []Message) (string, error)
+	Complete(ctx context.Context, messages []Message, maxTokens int) (string, error)
 }
 
 type Embedder interface {
@@ -29,10 +29,11 @@ type Message struct {
 
 // Request is the pipeline's input — decoupled from the HTTP layer.
 type Request struct {
-	QueryText string
-	RepoID    string
-	Type      string
-	Limit     int
+	QueryText  string
+	RepoID     string
+	Type       string
+	Limit      int
+	TokenLimit int
 }
 
 // Response is what the pipeline returns to the handler.
@@ -156,9 +157,10 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 
 	// 3. Build prompt
 	messages := buildPrompt(req, changeResult.chunks, codeResult.chunks)
+	maxTokens := ResolveTokenBudget(req, messages)
 
 	// 4. Call LLM
-	answer, err := p.vllm.Complete(ctx, messages)
+	answer, err := p.vllm.Complete(ctx, messages, maxTokens)
 	if err != nil {
 		return nil, fmt.Errorf("vllm complete: %w", err)
 	}
