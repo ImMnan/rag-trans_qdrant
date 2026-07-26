@@ -28,10 +28,11 @@ type docHandler struct {
 
 // RAGRequest mirrors the JSON body expected by the API.
 type RAGRequest struct {
-	QueryText string `json:"query_text"`
-	RepoID    string `json:"repo_id"`
-	Type      string `json:"type"`
-	Limit     int    `json:"limit"`
+	QueryText  string `json:"query_text"`
+	RepoID     string `json:"repo_id"`
+	Type       string `json:"type"`
+	Limit      int    `json:"limit"`
+	TokenLimit int    `json:"token_limit"`
 }
 
 func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
@@ -54,13 +55,15 @@ func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
 		Str("repo_id", req.RepoID).
 		Str("type", req.Type).
 		Int("limit", req.Limit).
+		Int("token_limit", req.TokenLimit).
 		Msg("rag request received")
 
 	result, err := rp.pipe.Execute(c.Context(), pipeline.Request{
-		QueryText: req.QueryText,
-		RepoID:    req.RepoID,
-		Type:      req.Type,
-		Limit:     req.Limit,
+		QueryText:  req.QueryText,
+		RepoID:     req.RepoID,
+		Type:       req.Type,
+		Limit:      req.Limit,
+		TokenLimit: req.TokenLimit,
 	})
 	if err != nil {
 		rp.log.Error().Err(err).Str("repo_id", req.RepoID).Msg("pipeline execution failed")
@@ -93,10 +96,11 @@ func (dp *docHandler) handleDocGenerate(c *fiber.Ctx) error {
 		Msg("doc generate/update request received")
 
 	result, err := dp.pipe.Execute(c.Context(), pipeline.Request{
-		QueryText: req.QueryText,
-		RepoID:    req.RepoID,
-		Type:      req.Type,
-		Limit:     req.Limit,
+		QueryText:  req.QueryText,
+		RepoID:     req.RepoID,
+		Type:       req.Type,
+		Limit:      req.Limit,
+		TokenLimit: req.TokenLimit,
 	})
 	if err != nil {
 		dp.log.Error().Err(err).Str("repo_id", req.RepoID).Msg("pipeline execution failed")
