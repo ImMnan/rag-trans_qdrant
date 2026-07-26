@@ -18,6 +18,7 @@ type chatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []chatMessage `json:"messages"`
 	Temperature float32       `json:"temperature"`
+	TokenLimit  int           `json:"max_tokens,omitempty"`
 }
 
 type chatMessage struct {
@@ -58,7 +59,7 @@ func NewHTTPClient(baseURL string, modelName string, log zerolog.Logger) *HTTPCl
 }
 
 // Complete sends messages to vLLM via the OpenAI-compatible HTTP API.
-func (c *HTTPClient) Complete(ctx context.Context, messages []pipeline.Message) (string, error) {
+func (c *HTTPClient) Complete(ctx context.Context, messages []pipeline.Message, maxTokens int) (string, error) {
 	temperature := inferTemperature(messages)
 
 	chatMsgs := make([]chatMessage, len(messages))
@@ -66,7 +67,7 @@ func (c *HTTPClient) Complete(ctx context.Context, messages []pipeline.Message) 
 		chatMsgs[i] = chatMessage{Role: m.Role, Content: m.Content}
 	}
 
-	body, err := json.Marshal(chatRequest{Model: c.modelName, Messages: chatMsgs, Temperature: temperature})
+	body, err := json.Marshal(chatRequest{Model: c.modelName, Messages: chatMsgs, Temperature: temperature, TokenLimit: maxTokens})
 	if err != nil {
 		return "", fmt.Errorf("marshal vllm request: %w", err)
 	}
