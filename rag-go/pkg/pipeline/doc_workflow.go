@@ -10,8 +10,8 @@ import (
 type DocDecisionStatus string
 
 const (
-	StatusNoChangesRequired  DocDecisionStatus = "no_changes_required"
-	StatusUpdateRequired     DocDecisionStatus = "update_required"
+	StatusNoChangesRequired   DocDecisionStatus = "no_changes_required"
+	StatusUpdateRequired      DocDecisionStatus = "update_required"
 	StatusNewDocumentRequired DocDecisionStatus = "new_document_required"
 )
 
@@ -20,6 +20,9 @@ type DocProfile struct {
 	RequiredSections []string
 	Tone             string
 	Audience         string
+	StepStyle        string
+	ExamplePolicy    string
+	ValidationPolicy string
 }
 
 func defaultDocProfile() DocProfile {
@@ -32,8 +35,11 @@ func defaultDocProfile() DocProfile {
 			"Validation",
 			"Notes",
 		},
-		Tone:     "technical and concise",
-		Audience: "support and engineering",
+		Tone:             "technical and concise",
+		Audience:         "support and engineering",
+		StepStyle:        "numbered user actions with one concrete task per step",
+		ExamplePolicy:    "include at least one runnable fenced example using the most relevant language such as bash, yaml, json, or go when the request is instructional, asks for configuration, commands, scripts, snippets, examples, setup, or how-to guidance",
+		ValidationPolicy: "include a short validation subsection with the exact command or observable check the user should run after completing the steps whenever the evidence supports one",
 	}
 }
 
@@ -55,9 +61,9 @@ type DocExtractResult struct {
 }
 
 type DocMatched struct {
-	DocRef         string  `json:"doc_ref"`
-	Title          string  `json:"title"`
-	WhyMatched     string  `json:"why_matched"`
+	DocRef          string  `json:"doc_ref"`
+	Title           string  `json:"title"`
+	WhyMatched      string  `json:"why_matched"`
 	MatchConfidence float64 `json:"match_confidence"`
 }
 
@@ -70,8 +76,8 @@ type DocAuditResult struct {
 }
 
 type DocDelta struct {
-	TargetDocRef   string   `json:"target_doc_ref"`
-	PatchType      string   `json:"patch_type"`
+	TargetDocRef    string   `json:"target_doc_ref"`
+	PatchType       string   `json:"patch_type"`
 	ChangedSections []string `json:"changed_sections"`
 	ChangesMarkdown string   `json:"changes_markdown"`
 }
@@ -91,12 +97,12 @@ type DocGenerateResult struct {
 }
 
 type EvidenceSummary struct {
-	FactsCount       int `json:"facts_count"`
-	UnknownsCount    int `json:"unknowns_count"`
-	MatchedDocsCount int `json:"matched_docs_count"`
+	FactsCount        int `json:"facts_count"`
+	UnknownsCount     int `json:"unknowns_count"`
+	MatchedDocsCount  int `json:"matched_docs_count"`
 	MissingFactsCount int `json:"missing_facts_count"`
-	ConflictsCount   int `json:"conflicts_count"`
-	StaleFactsCount  int `json:"stale_facts_count"`
+	ConflictsCount    int `json:"conflicts_count"`
+	StaleFactsCount   int `json:"stale_facts_count"`
 }
 
 type DocProcessOutput struct {
@@ -249,7 +255,7 @@ func (p *LLMDocProcessor) Process(ctx context.Context, req Request, changeChunks
 
 func (p *LLMDocProcessor) runExtract(ctx context.Context, req Request, changeChunks, codeChunks []string) (DocExtractResult, string, error) {
 	schema := `{"topic":"string","facts":[{"fact":"string","source":"change|code","confidence":0.0}],"unknowns":["string"]}`
-	raw, err := p.completeAndRepairJSON(ctx, "extract", schema, buildDocExtractPrompt(req, changeChunks, codeChunks))
+	raw, err := p.completeAndRepairJSON(ctx, req, "extract", schema, buildDocExtractPrompt(req, changeChunks, codeChunks))
 	if err != nil {
 		return DocExtractResult{}, "", err
 	}
@@ -264,7 +270,7 @@ func (p *LLMDocProcessor) runExtract(ctx context.Context, req Request, changeChu
 
 func (p *LLMDocProcessor) runAudit(ctx context.Context, req Request, extractRaw string, docChunks, genDocChunks []string) (DocAuditResult, string, error) {
 	schema := `{"matched_docs":[{"doc_ref":"string","title":"string","why_matched":"string","match_confidence":0.0}],"missing_facts":["string"],"conflicting_facts":["string"],"stale_facts":["string"],"summary":"string"}`
-	raw, err := p.completeAndRepairJSON(ctx, "audit", schema, buildDocAuditPrompt(req, extractRaw, docChunks, genDocChunks))
+	raw, err := p.completeAndRepairJSON(ctx, req, "audit", schema, buildDocAuditPrompt(req, extractRaw, docChunks, genDocChunks))
 	if err != nil {
 		return DocAuditResult{}, "", err
 	}
@@ -288,7 +294,7 @@ func (p *LLMDocProcessor) runGenerate(
 	genDocChunks []string,
 ) (DocGenerateResult, error) {
 	schema := `{"delta":{"target_doc_ref":"string","patch_type":"section_replace|add_section|remove_section|note_fix","changed_sections":["string"],"changes_markdown":"string"},"document":{"doc_kind":"kb_article","title":"string","summary":"string","body_markdown":"string","tags":["string"]},"warnings":["string"]}`
-	raw, err := p.completeAndRepairJSON(ctx, "generate", schema, buildDocGeneratePrompt(req, decision, extractRaw, auditRaw, profile, docChunks, genDocChunks))
+	raw, err := p.completeAndRepairJSON(ctx, req, "generate", schema, buildDocGeneratePrompt(req, decision, extractRaw, auditRaw, profile, docChunks, genDocChunks))
 	if err != nil {
 		return DocGenerateResult{}, err
 	}
@@ -301,25 +307,128 @@ func (p *LLMDocProcessor) runGenerate(
 	return out, nil
 }
 
-func (p *LLMDocProcessor) completeAndRepairJSON(ctx context.Context, stepName, schemaHint string, messages []Message) (string, error) {
-	raw, err := p.llm.Complete(ctx, messages)
+func (p *LLMDocProcessor) completeAndRepairJSON(ctx context.Context, req Request, stepName, schemaHint string, messages []Message) (string, error) {
+	maxTokens := ResolveDocStepTokenBudget(req, stepName, messages)
+	raw, err := p.llm.Complete(ctx, messages, maxTokens)
 	if err != nil {
 		return "", fmt.Errorf("vllm %s step: %w", stepName, err)
 	}
 
-	if json.Valid([]byte(raw)) {
-		return raw, nil
+	if normalized, ok := normalizeJSONObject(raw); ok {
+		return normalized, nil
 	}
 
-	repairRaw, repairErr := p.llm.Complete(ctx, buildDocRepairPrompt(stepName, schemaHint, raw))
+	repairPrompt := buildDocRepairPrompt(stepName, schemaHint, raw)
+	repairMaxTokens := ResolveDocStepTokenBudget(req, "repair", repairPrompt)
+	repairRaw, repairErr := p.llm.Complete(ctx, repairPrompt, repairMaxTokens)
 	if repairErr != nil {
 		return "", fmt.Errorf("invalid json in %s step and repair failed: %w", stepName, repairErr)
 	}
-	if !json.Valid([]byte(repairRaw)) {
+	normalizedRepair, ok := normalizeJSONObject(repairRaw)
+	if !ok {
 		return "", fmt.Errorf("invalid json in %s step after repair", stepName)
 	}
 
-	return repairRaw, nil
+	return normalizedRepair, nil
+}
+
+func normalizeJSONObject(raw string) (string, bool) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", false
+	}
+	if json.Valid([]byte(raw)) {
+		return raw, true
+	}
+
+	cleaned := strings.TrimSpace(stripCodeFence(raw))
+	if cleaned != raw && json.Valid([]byte(cleaned)) {
+		return cleaned, true
+	}
+
+	for _, candidate := range []string{cleaned, raw} {
+		if extracted, ok := extractBalancedJSON(candidate); ok {
+			return extracted, true
+		}
+	}
+
+	return "", false
+}
+
+func stripCodeFence(raw string) string {
+	trimmed := strings.TrimSpace(raw)
+	if !strings.HasPrefix(trimmed, "```") {
+		return raw
+	}
+
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) < 2 {
+		return raw
+	}
+	if !strings.HasPrefix(lines[0], "```") {
+		return raw
+	}
+
+	end := len(lines)
+	if strings.TrimSpace(lines[len(lines)-1]) == "```" {
+		end--
+	}
+	if end <= 1 {
+		return raw
+	}
+
+	return strings.Join(lines[1:end], "\n")
+}
+
+func extractBalancedJSON(raw string) (string, bool) {
+	start := -1
+	for i, r := range raw {
+		if r == '{' || r == '[' {
+			start = i
+			break
+		}
+	}
+	if start == -1 {
+		return "", false
+	}
+
+	depth := 0
+	inString := false
+	escaped := false
+	for i := start; i < len(raw); i++ {
+		ch := raw[i]
+		if inString {
+			if escaped {
+				escaped = false
+				continue
+			}
+			if ch == '\\' {
+				escaped = true
+				continue
+			}
+			if ch == '"' {
+				inString = false
+			}
+			continue
+		}
+
+		switch ch {
+		case '"':
+			inString = true
+		case '{', '[':
+			depth++
+		case '}', ']':
+			depth--
+			if depth == 0 {
+				candidate := strings.TrimSpace(raw[start : i+1])
+				if json.Valid([]byte(candidate)) {
+					return candidate, true
+				}
+			}
+		}
+	}
+
+	return "", false
 }
 
 func normalizeExtract(in *DocExtractResult) {

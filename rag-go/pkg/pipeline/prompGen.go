@@ -113,6 +113,7 @@ func buildDocGeneratePrompt(
 ) []Message {
 	docCtx := joinChunks(docChunks, "No documentation context found.")
 	genDocCtx := joinChunks(genDocChunks, "No generated documentation context found.")
+	exampleRequirement := buildDocExampleRequirement(req, profile)
 
 	systemPrompt := "You generate documentation artifacts from validated evidence. " +
 		"Return strict JSON only, with no markdown fence or extra text."
@@ -120,14 +121,27 @@ func buildDocGeneratePrompt(
 	userPrompt := fmt.Sprintf(
 		"Decision status: %s\n"+
 			"Doc profile kind: %s\n"+
-			"Required sections: %s\n\n"+
+			"Required sections: %s\n"+
+			"Audience: %s\n"+
+			"Tone: %s\n"+
+			"Step style: %s\n"+
+			"Example policy: %s\n"+
+			"Validation policy: %s\n\n"+
 			"Return JSON with this shape only:\n"+
 			"{\"delta\":{\"target_doc_ref\":string,\"patch_type\":\"section_replace|add_section|remove_section|note_fix\",\"changed_sections\":[string],\"changes_markdown\":string},\"document\":{\"doc_kind\":string,\"title\":string,\"summary\":string,\"body_markdown\":string,\"tags\":[string]},\"warnings\":[string]}\n\n"+
 			"Rules:\n"+
 			"- If status is update_required: populate delta and keep document empty object.\n"+
 			"- If status is new_document_required: populate document and keep delta empty object.\n"+
 			"- If status is no_changes_required: keep both delta and document empty objects.\n"+
-			"- The document format must follow kb_article style for now.\n\n"+
+			"- The document format must follow kb_article style for now.\n"+
+			"- The Steps section must be actionable. Each step should tell the user exactly what to do, not just describe the feature.\n"+
+			"- When the request asks for setup, integration, configuration, commands, scripts, examples, snippets, YAML, JSON, or how-to guidance, include at least one fenced code block inside body_markdown or changes_markdown using the most relevant language tag.\n"+
+			"- Use code comments inside examples when they help the user map values back to the documented context, but do not invent values that are unsupported by the evidence.\n"+
+			"- Prefer short executable examples over abstract pseudocode.\n"+
+			"- The Validation section must include a concrete command, request, or observable verification step when supported by the evidence.\n"+
+			"- If the evidence does not support a full runnable example, say what is unknown in warnings instead of fabricating details.\n"+
+			"- Keep body_markdown as plain markdown text in the JSON string; do not wrap the entire field in markdown fences.\n"+
+			"- Specific example requirement: %s\n\n"+
 			"## Original Query\n%s\n\n"+
 			"## Extracted Facts JSON\n%s\n\n"+
 			"## Audit JSON\n%s\n\n"+
@@ -136,6 +150,12 @@ func buildDocGeneratePrompt(
 		decision.Status,
 		profile.Kind,
 		strings.Join(profile.RequiredSections, ", "),
+		profile.Audience,
+		profile.Tone,
+		profile.StepStyle,
+		profile.ExamplePolicy,
+		profile.ValidationPolicy,
+		exampleRequirement,
 		req.QueryText,
 		extractedFactsJSON,
 		auditJSON,
@@ -147,6 +167,41 @@ func buildDocGeneratePrompt(
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
 	}
+}
+
+func buildDocExampleRequirement(req Request, profile DocProfile) string {
+	query := strings.ToLower(strings.TrimSpace(req.QueryText))
+	if query == "" {
+		return profile.ExamplePolicy
+	}
+
+	keywords := []string{
+		"how to",
+		"how do i",
+		"setup",
+		"configure",
+		"configuration",
+		"command",
+		"script",
+		"snippet",
+		"example",
+		"yaml",
+		"json",
+		"curl",
+		"steps",
+		"install",
+		"run",
+		"execute",
+		"integration",
+	}
+
+	for _, keyword := range keywords {
+		if strings.Contains(query, keyword) {
+			return "This request is instructional. Include at least one runnable fenced example and one concrete validation command if the retrieved evidence supports them."
+		}
+	}
+
+	return "Include fenced examples only when they materially help explain supported evidence."
 }
 
 func buildDocRepairPrompt(stepName, schemaHint, invalidOutput string) []Message {
