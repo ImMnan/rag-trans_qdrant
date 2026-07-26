@@ -46,34 +46,123 @@ func joinChunks(chunks []string, fallback string) string {
 	return strings.Join(chunks, "\n---\n")
 }
 
-func buildPromptforDoc(req Request, changeChunks, codeChunks []string) []Message {
+func buildDocExtractPrompt(req Request, changeChunks, codeChunks []string) []Message {
 	changeCtx := joinChunks(changeChunks, "No change data found.")
 	codeCtx := joinChunks(codeChunks, "No source context found.")
 
-	if strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
-		systemPrompt := "You are a senior technical writer producing & updating product documentation. " +
-			"Use only the provided context, consider these sections: \n" +
-			"1. Is the change already documented? if yes, does it need updating? if yes, update it accordingly.\n" +
-			"2. If the change is undocumented, create a new document\n" +
-			"3. Use the existing format and style of the documentation.\n" +
-			
-		userPrompt := fmt.Sprintf("## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s",
-			changeCtx, codeCtx, req.QueryText)
+	systemPrompt := "You extract product and implementation facts from code evidence. " +
+		"Use only the provided change/code context. " +
+		"Return strict JSON and do not add markdown fences."
 
-		return []Message{
-			{Role: "system", Content: systemPrompt},
-			{Role: "user", Content: userPrompt},
-		}
-	}
-
-	directPrompt := fmt.Sprintf(
-		"Answer the user question using only the context below. "+
-			"Be concise and factual. If asked whether a feature is supported, answer with 'Yes' or 'No' "+
-			"and include when it first appears in the provided context if available; "+
-			"otherwise say 'Unknown based on provided context'.\n\n"+
-			"## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Question\n%s",
-		changeCtx, codeCtx, req.QueryText,
+	userPrompt := fmt.Sprintf(
+		"Return JSON with this shape only:\n"+
+			"{\"topic\":string,\"facts\":[{\"fact\":string,\"source\":\"change|code\",\"confidence\":number}],\"unknowns\":[string]}\n\n"+
+			"Rules:\n"+
+			"- Extract factual statements only from evidence.\n"+
+			"- If uncertain, list the point under unknowns.\n"+
+			"- confidence range must be 0.0 to 1.0.\n\n"+
+			"## Original Query\n%s\n\n"+
+			"## Original Answer Type\n%s\n\n"+
+			"## Diff / Change Hunks\n%s\n\n"+
+			"## Source / Code Reference\n%s",
+		req.QueryText, req.Type, changeCtx, codeCtx,
 	)
 
-	return []Message{{Role: "user", Content: directPrompt}}
+	return []Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
+	}
+}
+
+func buildDocAuditPrompt(req Request, extractedFactsJSON string, docChunks, genDocChunks []string) []Message {
+	docCtx := joinChunks(docChunks, "No documentation context found.")
+	genDocCtx := joinChunks(genDocChunks, "No generated documentation context found.")
+
+	systemPrompt := "You audit existing documentation against extracted code facts. " +
+		"Use only the provided facts and doc context. " +
+		"Return strict JSON and do not add markdown fences."
+
+	userPrompt := fmt.Sprintf(
+		"Return JSON with this shape only:\n"+
+			"{\"matched_docs\":[{\"doc_ref\":string,\"title\":string,\"why_matched\":string,\"match_confidence\":number}],\"missing_facts\":[string],\"conflicting_facts\":[string],\"stale_facts\":[string],\"summary\":string}\n\n"+
+			"Rules:\n"+
+			"- A matched doc must directly relate to the query topic.\n"+
+			"- Treat code-derived facts as ground truth.\n"+
+			"- match_confidence range must be 0.0 to 1.0.\n\n"+
+			"## Original Query\n%s\n\n"+
+			"## Extracted Facts JSON\n%s\n\n"+
+			"## Existing Documentation Chunks\n%s\n\n"+
+			"## Existing Generated Documentation Chunks\n%s",
+		req.QueryText, extractedFactsJSON, docCtx, genDocCtx,
+	)
+
+	return []Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
+	}
+}
+
+func buildDocGeneratePrompt(
+	req Request,
+	decision DocDecision,
+	extractedFactsJSON string,
+	auditJSON string,
+	profile DocProfile,
+	docChunks []string,
+	genDocChunks []string,
+) []Message {
+	docCtx := joinChunks(docChunks, "No documentation context found.")
+	genDocCtx := joinChunks(genDocChunks, "No generated documentation context found.")
+
+	systemPrompt := "You generate documentation artifacts from validated evidence. " +
+		"Return strict JSON only, with no markdown fence or extra text."
+
+	userPrompt := fmt.Sprintf(
+		"Decision status: %s\n"+
+			"Doc profile kind: %s\n"+
+			"Required sections: %s\n\n"+
+			"Return JSON with this shape only:\n"+
+			"{\"delta\":{\"target_doc_ref\":string,\"patch_type\":\"section_replace|add_section|remove_section|note_fix\",\"changed_sections\":[string],\"changes_markdown\":string},\"document\":{\"doc_kind\":string,\"title\":string,\"summary\":string,\"body_markdown\":string,\"tags\":[string]},\"warnings\":[string]}\n\n"+
+			"Rules:\n"+
+			"- If status is update_required: populate delta and keep document empty object.\n"+
+			"- If status is new_document_required: populate document and keep delta empty object.\n"+
+			"- If status is no_changes_required: keep both delta and document empty objects.\n"+
+			"- The document format must follow kb_article style for now.\n\n"+
+			"## Original Query\n%s\n\n"+
+			"## Extracted Facts JSON\n%s\n\n"+
+			"## Audit JSON\n%s\n\n"+
+			"## Existing Documentation Chunks\n%s\n\n"+
+			"## Existing Generated Documentation Chunks\n%s",
+		decision.Status,
+		profile.Kind,
+		strings.Join(profile.RequiredSections, ", "),
+		req.QueryText,
+		extractedFactsJSON,
+		auditJSON,
+		docCtx,
+		genDocCtx,
+	)
+
+	return []Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
+	}
+}
+
+func buildDocRepairPrompt(stepName, schemaHint, invalidOutput string) []Message {
+	systemPrompt := "You repair invalid JSON. Return only valid JSON and preserve meaning."
+	userPrompt := fmt.Sprintf(
+		"Step: %s\n"+
+			"Schema hint:\n%s\n\n"+
+			"Invalid output:\n%s\n\n"+
+			"Return corrected JSON only.",
+		stepName,
+		schemaHint,
+		invalidOutput,
+	)
+
+	return []Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
+	}
 }
