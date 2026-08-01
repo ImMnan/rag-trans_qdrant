@@ -88,7 +88,10 @@ func buildDocAuditPrompt(req Request, extractedFactsJSON string, docChunks, genD
 			"Rules:\n"+
 			"- A matched doc must directly relate to the query topic.\n"+
 			"- Treat code-derived facts as ground truth.\n"+
-			"- match_confidence range must be 0.0 to 1.0.\n\n"+
+			"- match_confidence range must be 0.0 to 1.0.\n"+
+			"- Each documentation chunk is prefixed with \"[source: <filename>]\" on its own line. "+
+			"When a chunk matches the query topic, copy that exact filename (e.g. \"docs/gatling.md\") into the doc_ref field. "+
+			"Never leave doc_ref empty when a [source: ...] label is present in the matched chunk.\n\n"+
 			"## Original Query\n%s\n\n"+
 			"## Extracted Facts JSON\n%s\n\n"+
 			"## Existing Documentation Chunks\n%s\n\n"+
