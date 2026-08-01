@@ -79,11 +79,37 @@ func (c *Client) Query(ctx context.Context, collection string, vector []float32,
 		if hit.Payload == nil {
 			continue
 		}
-		if v, ok := hit.Payload["text"]; ok {
-			if sv := v.GetStringValue(); sv != "" {
-				chunks = append(chunks, sv)
+
+		// Extract chunk text — payload field is "chunk_text" in doc/code collections.
+		var text string
+		for _, field := range []string{"chunk_text", "text"} {
+			if v, ok := hit.Payload[field]; ok {
+				if sv := v.GetStringValue(); sv != "" {
+					text = sv
+					break
+				}
 			}
 		}
+		if text == "" {
+			continue
+		}
+
+		// Prefix with file_path (falls back to doc_ref) so downstream
+		// prompts can populate doc_ref without hallucinating a filename.
+		source := ""
+		for _, field := range []string{"file_path", "doc_ref"} {
+			if v, ok := hit.Payload[field]; ok {
+				if sv := v.GetStringValue(); sv != "" {
+					source = sv
+					break
+				}
+			}
+		}
+		if source != "" {
+			text = "[source: " + source + "]\n" + text
+		}
+
+		chunks = append(chunks, text)
 	}
 
 	c.log.Debug().
