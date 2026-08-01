@@ -8,7 +8,7 @@ const (
 	maxAutoBudgetTokens = 8192
 
 	minRequestTokenLimit = 64
-	maxRequestTokenLimit = 8192
+	maxRequestTokenLimit = 12288
 )
 
 // ResolveTokenBudget returns the output-token budget for a single LLM call.
@@ -43,7 +43,7 @@ func ResolveDocStepTokenBudget(req Request, stepName string, messages []Message)
 	}
 
 	stepBudget := int(float64(base) * multiplier)
-	return clampInt(stepBudget, 128, maxAutoBudgetTokens)
+	return clampInt(stepBudget, minAutoBudgetTokens, maxAutoBudgetTokens)
 }
 
 func estimateMessageTokens(messages []Message) int {
