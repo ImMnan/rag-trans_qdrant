@@ -34,6 +34,8 @@ type Request struct {
 	Type       string
 	Limit      int
 	TokenLimit int
+	RepoName   string
+	Component  string
 }
 
 // Response is what the pipeline returns to the handler.
@@ -128,6 +130,12 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		chunks []string
 		err    error
 	}
+	var qdrantQuery string
+	if req.RepoID != "" {
+		qdrantQuery = req.RepoID
+	} else {
+		qdrantQuery = req.Component
+	}
 
 	var wg sync.WaitGroup
 	changeCh := make(chan result, 1)
@@ -135,12 +143,12 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.changeCollection, vector, req.RepoID, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.changeCollection, vector, qdrantQuery, req.Limit)
 		changeCh <- result{chunks, err}
 	}()
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, req.RepoID, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, qdrantQuery, req.Limit)
 		codeCh <- result{chunks, err}
 	}()
 	wg.Wait()
@@ -187,6 +195,13 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		err    error
 	}
 
+	var qdrantQuery string
+	if req.RepoID != "" {
+		qdrantQuery = req.RepoID
+	} else {
+		qdrantQuery = req.Component
+	}
+
 	var wg sync.WaitGroup
 	changeCh := make(chan result, 1)
 	codeCh := make(chan result, 1)
@@ -195,23 +210,23 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	wg.Add(4)
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.changeCollection, vector, req.RepoID, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.changeCollection, vector, qdrantQuery, req.Limit)
 		changeCh <- result{chunks, err}
 	}()
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, req.RepoID, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, qdrantQuery, req.Limit)
 		codeCh <- result{chunks, err}
 	}()
 
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.docCollection, vector, req.RepoID, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.docCollection, vector, qdrantQuery, req.Limit)
 		docCh <- result{chunks, err}
 	}()
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.genDocCollection, vector, req.RepoID, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.genDocCollection, vector, qdrantQuery, req.Limit)
 		genDocCh <- result{chunks, err}
 	}()
 	wg.Wait()
