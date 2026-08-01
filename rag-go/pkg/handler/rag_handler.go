@@ -29,7 +29,7 @@ type docHandler struct {
 // RAGRequest mirrors the JSON body expected by the API.
 type RAGRequest struct {
 	QueryText  string `json:"query_text"`
-	RepoID     string `json:"repo_id",omitempty"`
+	RepoID     string `json:"repo_id,omitempty"`
 	RepoName   string `json:"repo_name,omitempty"`
 	Type       string `json:"type"`
 	Limit      int    `json:"limit"`
