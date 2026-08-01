@@ -29,10 +29,12 @@ type docHandler struct {
 // RAGRequest mirrors the JSON body expected by the API.
 type RAGRequest struct {
 	QueryText  string `json:"query_text"`
-	RepoID     string `json:"repo_id"`
+	RepoID     string `json:"repo_id",omitempty"`
+	RepoName   string `json:"repo_name,omitempty"`
 	Type       string `json:"type"`
 	Limit      int    `json:"limit"`
 	TokenLimit int    `json:"token_limit"`
+	Component  string `json:"component,omitempty"` // optional, if repoID is specified.
 }
 
 func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
@@ -44,8 +46,8 @@ func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
 	if req.QueryText == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "query_text is required"})
 	}
-	if req.RepoID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "repo_id is required"})
+	if req.RepoID == "" && req.Component == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "repo_id or component name is required"})
 	}
 	if req.Limit <= 0 {
 		req.Limit = 5
@@ -54,6 +56,7 @@ func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
 	rp.log.Info().
 		Str("repo_id", req.RepoID).
 		Str("type", req.Type).
+		Str("component", req.Component).
 		Int("limit", req.Limit).
 		Int("token_limit", req.TokenLimit).
 		Msg("rag request received")
@@ -64,6 +67,7 @@ func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
 		Type:       req.Type,
 		Limit:      req.Limit,
 		TokenLimit: req.TokenLimit,
+		Component:  req.Component,
 	})
 	if err != nil {
 		rp.log.Error().Err(err).Str("repo_id", req.RepoID).Msg("pipeline execution failed")
@@ -82,8 +86,8 @@ func (dp *docHandler) handleDocGenerate(c *fiber.Ctx) error {
 	if req.QueryText == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "query_text is required"})
 	}
-	if req.RepoID == "" {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "repo_id is required"})
+	if req.RepoID == "" && req.Component == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "repo_id or component name is required"})
 	}
 	if req.Limit <= 0 {
 		req.Limit = 5
@@ -101,9 +105,10 @@ func (dp *docHandler) handleDocGenerate(c *fiber.Ctx) error {
 		Type:       req.Type,
 		Limit:      req.Limit,
 		TokenLimit: req.TokenLimit,
+		Component:  req.Component,
 	})
 	if err != nil {
-		dp.log.Error().Err(err).Str("repo_id", req.RepoID).Msg("pipeline execution failed")
+		dp.log.Error().Err(err).Str("repo_id", req.RepoID).Str("component", req.Component).Msg("pipeline execution failed")
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "pipeline failed"})
 	}
 
