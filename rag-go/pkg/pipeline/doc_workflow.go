@@ -27,7 +27,7 @@ type DocProfile struct {
 
 func defaultDocProfile() DocProfile {
 	return DocProfile{
-		Kind: "kb_article",
+		Kind: "kb_article", //for now I am keeping this hardcoded.
 		RequiredSections: []string{
 			"Summary",
 			"Context",
