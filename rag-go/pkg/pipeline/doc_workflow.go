@@ -22,9 +22,6 @@ type DocProfile struct {
 	RequiredSections []string
 	Tone             string
 	Audience         string
-	StepStyle        string
-	ExamplePolicy    string
-	ValidationPolicy string
 }
 
 func defaultDocProfile() DocProfile {
@@ -37,11 +34,8 @@ func defaultDocProfile() DocProfile {
 			"Validation",
 			"Notes",
 		},
-		Tone:             "technical and concise",
-		Audience:         "support and engineering",
-		StepStyle:        "numbered user actions with one concrete task per step",
-		ExamplePolicy:    "include at least one runnable fenced example using the most relevant language such as bash, yaml, json, or go when the request is instructional, asks for configuration, commands, scripts, snippets, examples, setup, or how-to guidance",
-		ValidationPolicy: "include a short validation subsection with the exact command or observable check the user should run after completing the steps whenever the evidence supports one",
+		Tone:     "technical and concise",
+		Audience: "support and engineering",
 	}
 }
 

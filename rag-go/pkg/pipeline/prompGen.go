@@ -116,35 +116,37 @@ func buildDocGeneratePrompt(
 ) []Message {
 	docCtx := joinChunks(docChunks, "No documentation context found.")
 	genDocCtx := joinChunks(genDocChunks, "No generated documentation context found.")
-	exampleRequirement := buildDocExampleRequirement(req, profile)
 
-	systemPrompt := "You generate documentation artifacts from validated evidence. " +
-		"Return strict JSON only, with no markdown fence or extra text."
+	codeBlockRule := "Include fenced code block examples only when they materially help explain the evidence."
+	if isInstructionalRequest(req.QueryText) {
+		codeBlockRule = "For every numbered step that involves a file, option, flag, or command: " +
+			"write the step description, then on the very next line output a triple-backtick fenced code block " +
+			"using the correct language tag (yaml, bash, json, go, etc). " +
+			"The Validation section MUST end with a fenced bash block containing the exact command to verify the result."
+	}
+
+	systemPrompt := "You are a technical writer producing user-executable documentation. " +
+		"Write steps as concrete user actions, not feature descriptions. " +
+		"Return your result encoded as a single JSON object with no surrounding markdown fence."
 
 	userPrompt := fmt.Sprintf(
 		"Decision status: %s\n"+
-			"Doc profile kind: %s\n"+
-			"Required sections: %s\n"+
-			"Audience: %s\n"+
-			"Tone: %s\n"+
-			"Step style: %s\n"+
-			"Example policy: %s\n"+
-			"Validation policy: %s\n\n"+
-			"Return JSON with this shape only:\n"+
-			"{\"delta\":{\"target_doc_ref\":string,\"patch_type\":\"section_replace|add_section|remove_section|note_fix\",\"changed_sections\":[string],\"changes_markdown\":string},\"document\":{\"doc_kind\":string,\"title\":string,\"summary\":string,\"body_markdown\":string,\"tags\":[string]},\"warnings\":[string]}\n\n"+
-			"Rules:\n"+
-			"- If status is update_required: populate delta and keep document empty object.\n"+
-			"- If status is new_document_required: populate document and keep delta empty object.\n"+
-			"- If status is no_changes_required: keep both delta and document empty objects.\n"+
-			"- The document format must follow kb_article style for now.\n"+
-			"- The Steps section must be actionable. Each step should tell the user exactly what to do, not just describe the feature.\n"+
-			"- When the request asks for setup, integration, configuration, commands, scripts, examples, snippets, YAML, JSON, or how-to guidance, include at least one fenced code block inside body_markdown or changes_markdown using the most relevant language tag.\n"+
-			"- Use code comments inside examples when they help the user map values back to the documented context, but do not invent values that are unsupported by the evidence.\n"+
-			"- Prefer short executable examples over abstract pseudocode.\n"+
-			"- The Validation section must include a concrete command, request, or observable verification step when supported by the evidence.\n"+
-			"- If the evidence does not support a full runnable example, say what is unknown in warnings instead of fabricating details.\n"+
-			"- Keep body_markdown as plain markdown text in the JSON string; do not wrap the entire field in markdown fences.\n"+
-			"- Specific example requirement: %s\n\n"+
+			"Doc profile kind: %s | Required sections: %s\n"+
+			"Audience: %s | Tone: %s\n\n"+
+			"Content rules:\n"+
+			"1. Steps tell the user exactly what to run or edit.\n"+
+			"2. %s\n"+
+			"3. Inside code blocks, add a short comment only when a value is non-obvious; do not fabricate values not supported by the evidence.\n"+
+			"4. If evidence is insufficient for a full runnable example, list what is unknown in warnings instead of inventing details.\n\n"+
+			"Return a single JSON object with this shape:\n"+
+			"{\"delta\":{\"target_doc_ref\":\"string\",\"patch_type\":\"section_replace|add_section|remove_section|note_fix\",\"changed_sections\":[\"string\"],\"changes_markdown\":\"string\"},"+
+			"\"document\":{\"doc_kind\":\"string\",\"title\":\"string\",\"summary\":\"string\",\"body_markdown\":\"string\",\"tags\":[\"string\"]},"+
+			"\"warnings\":[\"string\"]}\n\n"+
+			"JSON encoding rules:\n"+
+			"- status update_required: populate delta; set document to {}.\n"+
+			"- status new_document_required: populate document; set delta to {}.\n"+
+			"- status no_changes_required: set both delta and document to {}.\n"+
+			"- Newlines inside string values MUST be encoded as \\n. Triple-backtick fences are valid inside JSON strings.\n\n"+
 			"## Original Query\n%s\n\n"+
 			"## Extracted Facts JSON\n%s\n\n"+
 			"## Audit JSON\n%s\n\n"+
@@ -155,10 +157,7 @@ func buildDocGeneratePrompt(
 		strings.Join(profile.RequiredSections, ", "),
 		profile.Audience,
 		profile.Tone,
-		profile.StepStyle,
-		profile.ExamplePolicy,
-		profile.ValidationPolicy,
-		exampleRequirement,
+		codeBlockRule,
 		req.QueryText,
 		extractedFactsJSON,
 		auditJSON,
@@ -172,39 +171,22 @@ func buildDocGeneratePrompt(
 	}
 }
 
-func buildDocExampleRequirement(req Request, profile DocProfile) string {
-	query := strings.ToLower(strings.TrimSpace(req.QueryText))
+func isInstructionalRequest(queryText string) bool {
+	query := strings.ToLower(strings.TrimSpace(queryText))
 	if query == "" {
-		return profile.ExamplePolicy
+		return false
 	}
-
-	keywords := []string{
-		"how to",
-		"how do i",
-		"setup",
-		"configure",
-		"configuration",
-		"command",
-		"script",
-		"snippet",
-		"example",
-		"yaml",
-		"json",
-		"curl",
-		"steps",
-		"install",
-		"run",
-		"execute",
-		"integration",
-	}
-
-	for _, keyword := range keywords {
-		if strings.Contains(query, keyword) {
-			return "This request is instructional. Include at least one runnable fenced example and one concrete validation command if the retrieved evidence supports them."
+	for _, kw := range []string{
+		"how to", "how do i", "setup", "configure", "configuration",
+		"command", "script", "snippet", "example", "yaml", "json",
+		"curl", "steps", "install", "run", "execute", "integration",
+		"write", "create", "generate", "show", "share",
+	} {
+		if strings.Contains(query, kw) {
+			return true
 		}
 	}
-
-	return "Include fenced examples only when they materially help explain supported evidence."
+	return false
 }
 
 func buildDocRepairPrompt(stepName, schemaHint, invalidOutput string) []Message {
