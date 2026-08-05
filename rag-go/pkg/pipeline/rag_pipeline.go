@@ -41,7 +41,15 @@ type Request struct {
 // Response is what the pipeline returns to the handler.
 type Response struct {
 	Answer  string         `json:"answer"`
+	Type    string         `json:"type"`
 	Sources map[string]int `json:"sources"`
+	Meta    ResponseMeta   `json:"meta"`
+}
+
+type ResponseMeta struct {
+	RepoID    string `json:"repo_id"`
+	Component string `json:"component,omitempty"`
+	QueryText string `json:"query_text"`
 }
 
 // RAGPipeline wires all downstream clients together.
@@ -175,9 +183,15 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 
 	return &Response{
 		Answer: answer,
+		Type:   req.Type,
 		Sources: map[string]int{
 			"change_chunks_retrieved": len(changeResult.chunks),
 			"code_chunks_retrieved":   len(codeResult.chunks),
+		},
+		Meta: ResponseMeta{
+			RepoID:    req.RepoID,
+			Component: req.Component,
+			QueryText: req.QueryText,
 		},
 	}, nil
 }
