@@ -21,7 +21,7 @@ import (
 func main() {
 	// --- Logging ---
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
-	log.Logger = zerolog.New(os.Stdout).With().Timestamp().Str("service", "rag-go").Logger()
+	log.Logger = zerolog.New(os.Stdout).With().Timestamp().Str("service", "orca").Logger()
 
 	// --- Config from env ---
 	cfg := loadConfig()
@@ -31,7 +31,7 @@ func main() {
 		Str("qdrant_host", cfg.QdrantHost).
 		Str("vllm_host", cfg.VLLMHost).
 		Str("embed_host", cfg.EmbedHost).
-		Msg("starting rag-go service")
+		Msg("starting orca service")
 
 	// --- Clients ---
 	qdrantClient := qdrant.NewClient(cfg.QdrantHost, log.Logger)
@@ -45,9 +45,9 @@ func main() {
 
 	// --- Fiber app ---
 	app := fiber.New(fiber.Config{
-		ReadTimeout:  30 * time.Second,
-		WriteTimeout: 120 * time.Second, // vLLM inference can be slow
-		IdleTimeout:  60 * time.Second,
+		ReadTimeout:  cfg.ReadTimeout,
+		WriteTimeout: cfg.WriteTimeout, // vLLM inference can be slow
+		IdleTimeout:  cfg.IdleTimeout,
 	})
 
 	handler.Register(app, pipe, docPipe, log.Logger)

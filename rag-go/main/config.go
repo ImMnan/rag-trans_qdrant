@@ -4,10 +4,14 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 )
 
 type config struct {
 	FiberPort        string
+	ReadTimeout      time.Duration
+	WriteTimeout     time.Duration
+	IdleTimeout      time.Duration
 	QdrantHost       string // host or host:port
 	VLLMHost         string // host or host:port
 	EmbedHost        string // host or host:port
@@ -21,6 +25,9 @@ type config struct {
 func loadConfig() config {
 	return config{
 		FiberPort:        getEnv("FIBER_PORT", "8080"),
+		ReadTimeout:      getEnvDuration("FIBER_READ_TIMEOUT", 30*time.Second),
+		WriteTimeout:     getEnvDuration("FIBER_WRITE_TIMEOUT", 120*time.Second),
+		IdleTimeout:      getEnvDuration("FIBER_IDLE_TIMEOUT", 60*time.Second),
 		QdrantHost:       normalizeHostPort(getEnv("QDRANT_HOST", "qdrant-service"), 6334),
 		VLLMHost:         normalizeHostPort(getEnv("VLLM_HOST", "qwen-3-service"), 80),
 		EmbedHost:        normalizeHostPort(getEnv("EMBED_SERVICE_HOST", "embed-e5-service"), 80),
@@ -69,4 +76,18 @@ func getEnv(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func getEnvDuration(key string, fallback time.Duration) time.Duration {
+	v := strings.TrimSpace(os.Getenv(key))
+	if v == "" {
+		return fallback
+	}
+
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return fallback
+	}
+
+	return d
 }
