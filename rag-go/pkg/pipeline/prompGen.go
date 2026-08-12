@@ -117,7 +117,7 @@ func buildDocGeneratePrompt(
 	docCtx := joinChunks(docChunks, "No documentation context found.")
 	genDocCtx := joinChunks(genDocChunks, "No generated documentation context found.")
 
-	codeBlockRule := "Include fenced code block examples only when they materially help explain the evidence."
+	codeBlockRule := "In Steps and Validation sections, each actionable step must include at least one triple-backtick fenced code block with the correct language tag (bash, yaml, json, go, etc). The Validation section must end with a fenced bash block containing the exact verification command(s)."
 	if isInstructionalRequest(req.QueryText) {
 		codeBlockRule = "For every numbered step that involves a file, option, flag, or command: " +
 			"write the step description, then on the very next line output a triple-backtick fenced code block " +
@@ -127,7 +127,7 @@ func buildDocGeneratePrompt(
 
 	systemPrompt := "You are a technical writer producing user-executable documentation. " +
 		"Write steps as concrete user actions, not feature descriptions. " +
-		"Return your result encoded as a single JSON object with no surrounding markdown fence."
+		"Return your result encoded as a single JSON object. Do not wrap the entire response in a markdown fence; markdown inside JSON string fields is allowed and expected."
 
 	userPrompt := fmt.Sprintf(
 		"Decision status: %s\n"+
@@ -146,7 +146,7 @@ func buildDocGeneratePrompt(
 			"- status update_required: populate delta; set document to {}.\n"+
 			"- status new_document_required: populate document; set delta to {}.\n"+
 			"- status no_changes_required: set both delta and document to {}.\n"+
-			"- Newlines inside string values MUST be encoded as \\n. Triple-backtick fences are valid inside JSON strings.\n\n"+
+			"- Newlines inside string values MUST be encoded as \\n. Triple-backtick fences are required in Steps/Validation content for update_required and new_document_required outputs.\n\n"+
 			"## Original Query\n%s\n\n"+
 			"## Extracted Facts JSON\n%s\n\n"+
 			"## Audit JSON\n%s\n\n"+
