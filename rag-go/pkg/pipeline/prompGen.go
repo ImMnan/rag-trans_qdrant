@@ -16,7 +16,8 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 			"1. **What Changed** - describe the commits/diffs concisely.\n" +
 			"2. **User Impact** - explain what end-users will notice or need to act on.\n" +
 			"3. **Security & Performance** - flag any security fixes or performance optimizations; " +
-			"write 'None identified' if absent."
+			"write 'None identified' if absent.\n" +
+			"4. **Time Scope** - if the request specifies a timeframe (for example: last 10 days, between April and May), include only changes explicitly tied to that timeframe. Exclude anything outside it. If the context does not provide enough dated evidence use the last 30 days as a default timeframe.\n"
 
 		userPrompt := fmt.Sprintf("## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s",
 			changeCtx, codeCtx, req.QueryText)
