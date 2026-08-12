@@ -25,13 +25,15 @@ func main() {
 
 	// --- Config from env ---
 	cfg := loadConfig()
-
+	orcaVersion := "0.5.7"
 	log.Info().
 		Str("port", cfg.FiberPort).
 		Str("qdrant_host", cfg.QdrantHost).
 		Str("vllm_host", cfg.VLLMHost).
 		Str("embed_host", cfg.EmbedHost).
-		Msg("starting orca service")
+		Str("Orca version", orcaVersion).
+		Str("maintainer", "https://github.com/ImMnan").
+		Msg("starting Orca service")
 
 	// --- Clients ---
 	qdrantClient := qdrant.NewClient(cfg.QdrantHost, log.Logger)
