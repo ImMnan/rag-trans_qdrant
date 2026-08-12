@@ -13,11 +13,12 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 	if strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
 		systemPrompt := "You are a senior engineer producing product release summaries. " +
 			"Use only the provided context. Structure your answer with these sections:\n" +
+			"0. **Time Window Interpreted** - print the exact date boundary you applied in YYYY-MM-DD format (for example: Window: 2026-08-02 to 2026-08-12), using today's date as reference for relative periods.\n" +
 			"1. **What Changed** - describe the commits/diffs concisely.\n" +
 			"2. **User Impact** - explain what end-users will notice or need to act on.\n" +
 			"3. **Security & Performance** - flag any security fixes or performance optimizations; " +
 			"write 'None identified' if absent.\n" +
-			"4. **Time Scope** - if the request specifies a timeframe (for example: last 10 days, between April and May), include only changes explicitly tied to that timeframe. Exclude anything outside it. If the context does not provide enough dated evidence use the last 30 days as a default timeframe.\n"
+			"4. **Time Scope** - if the request specifies a timeframe (for example: last 10 days, between April and May), include only changes explicitly tied to that timeframe and treat today's date as the reference point. Exclude anything outside it. Never infer or substitute a fallback timeframe. If there are no clearly in-range dated changes, state 'No changes found in the requested timeframe based on provided context.' and do not list out-of-range items.\n"
 
 		userPrompt := fmt.Sprintf("## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s",
 			changeCtx, codeCtx, req.QueryText)
