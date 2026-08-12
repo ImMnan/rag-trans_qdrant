@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -12,7 +14,9 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 	codeCtx := joinChunks(codeChunks, "No source context found.")
 
 	if strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
-		today := time.Now().Format("2006-01-02")
+		now := time.Now()
+		today := now.Format("2006-01-02")
+		timeframeGuidance := buildTimeframeGuidance(req.QueryText, now)
 
 		systemPrompt := "You are a senior engineer producing product release summaries. " +
 			"Use only the provided context. Structure your answer with these sections:\n" +
@@ -21,7 +25,7 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 			"2. **User Impact** - explain what end-users will notice or need to act on.\n" +
 			"3. **Security & Performance** - flag any security fixes or performance optimizations; " +
 			"write 'None identified' if absent.\n" +
-			"4. **Time Scope** - if the request specifies a timeframe (for example: last 10 days, between April and May), include only changes explicitly tied to that timeframe and treat Today as the reference point. Exclude anything outside it. Never infer the window from commit history or repository dates. Never infer or substitute a fallback timeframe. If there are no clearly in-range dated changes, state 'No changes found in the requested timeframe based on provided context.' and do not list out-of-range items.\n"
+			"4. **Time Scope** - " + timeframeGuidance + "\n"
 
 		userPrompt := fmt.Sprintf("## Today\n%s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s",
 			today, changeCtx, codeCtx, req.QueryText)
@@ -32,20 +36,20 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 		}
 	}
 
-	today := time.Now().Format("2006-01-02")
+	now := time.Now()
+	today := now.Format("2006-01-02")
+	timeframeGuidance := buildTimeframeGuidance(req.QueryText, now)
 	directPrompt := fmt.Sprintf(
 		"Answer the user question using only the context below. "+
 			"Be concise and factual. If asked whether a feature is supported, answer with 'Yes' or 'No' "+
 			"and include when it first appears in the provided context if available; "+
 			"otherwise say 'Unknown based on provided context'.\n\n"+
 			"Timeframe rules for direct answers:\n"+
-			"1. If the request specifies a timeframe, treat Today as the only reference point for relative windows (for example: last 10 days).\n"+
-			"2. Never infer the window from commit history or repository dates.\n"+
-			"3. Exclude any out-of-range items.\n"+
-			"4. Echo the interpreted boundary as: Window: YYYY-MM-DD to YYYY-MM-DD.\n"+
-			"5. If there are no clearly in-range dated changes, say: No changes found in the requested timeframe based on provided context.\n\n"+
+			"1. %s\n"+
+			"2. Echo the interpreted boundary as: Window: YYYY-MM-DD to YYYY-MM-DD.\n"+
+			"3. If there are no clearly in-range dated changes, say: No changes found in the requested timeframe based on provided context.\n\n"+
 			"## Today\n%s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Question\n%s",
-		today, changeCtx, codeCtx, req.QueryText,
+		timeframeGuidance, today, changeCtx, codeCtx, req.QueryText,
 	)
 
 	return []Message{{Role: "user", Content: directPrompt}}
@@ -56,6 +60,59 @@ func joinChunks(chunks []string, fallback string) string {
 		return fallback
 	}
 	return strings.Join(chunks, "\n---\n")
+}
+
+func buildTimeframeGuidance(queryText string, now time.Time) string {
+	query := strings.ToLower(strings.TrimSpace(queryText))
+	base := "If the request specifies a timeframe, treat Today as the only reference point for relative windows, never infer from commit history, exclude out-of-range items, and do not cite out-of-range dates/months."
+	if query == "" {
+		return base
+	}
+
+	if m := regexp.MustCompile(`\blast\s+(\d{1,3})\s+days?\b`).FindStringSubmatch(query); len(m) == 2 {
+		days, err := strconv.Atoi(m[1])
+		if err == nil && days > 0 {
+			start := now.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
+			end := now.Format("2006-01-02")
+			return fmt.Sprintf("Resolved window from query: %s to %s. Use this exact range.", start, end)
+		}
+	}
+
+	if m := regexp.MustCompile(`\bin\s+([a-z]+)\s+(\d{4})\b`).FindStringSubmatch(query); len(m) == 3 {
+		if month, ok := parseMonthName(m[1]); ok {
+			year, err := strconv.Atoi(m[2])
+			if err == nil {
+				start := time.Date(year, month, 1, 0, 0, 0, 0, now.Location())
+				end := start.AddDate(0, 1, 0).Add(-24 * time.Hour)
+				return fmt.Sprintf("Resolved window from query: %s to %s. Use this exact range.", start.Format("2006-01-02"), end.Format("2006-01-02"))
+			}
+		}
+	}
+
+	if m := regexp.MustCompile(`\bbetween\s+(\d{4}-\d{2}-\d{2})\s+(?:and|to)\s+(\d{4}-\d{2}-\d{2})\b`).FindStringSubmatch(query); len(m) == 3 {
+		return fmt.Sprintf("Resolved window from query: %s to %s. Use this exact range.", m[1], m[2])
+	}
+
+	return base
+}
+
+func parseMonthName(s string) (time.Month, bool) {
+	months := map[string]time.Month{
+		"january":   time.January,
+		"february":  time.February,
+		"march":     time.March,
+		"april":     time.April,
+		"may":       time.May,
+		"june":      time.June,
+		"july":      time.July,
+		"august":    time.August,
+		"september": time.September,
+		"october":   time.October,
+		"november":  time.November,
+		"december":  time.December,
+	}
+	m, ok := months[strings.ToLower(strings.TrimSpace(s))]
+	return m, ok
 }
 
 func buildDocExtractPrompt(req Request, changeChunks, codeChunks []string) []Message {
