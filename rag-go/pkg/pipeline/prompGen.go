@@ -32,13 +32,20 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 		}
 	}
 
+	today := time.Now().Format("2006-01-02")
 	directPrompt := fmt.Sprintf(
 		"Answer the user question using only the context below. "+
 			"Be concise and factual. If asked whether a feature is supported, answer with 'Yes' or 'No' "+
 			"and include when it first appears in the provided context if available; "+
 			"otherwise say 'Unknown based on provided context'.\n\n"+
-			"## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Question\n%s",
-		changeCtx, codeCtx, req.QueryText,
+			"Timeframe rules for direct answers:\n"+
+			"1. If the request specifies a timeframe, treat Today as the only reference point for relative windows (for example: last 10 days).\n"+
+			"2. Never infer the window from commit history or repository dates.\n"+
+			"3. Exclude any out-of-range items.\n"+
+			"4. Echo the interpreted boundary as: Window: YYYY-MM-DD to YYYY-MM-DD.\n"+
+			"5. If there are no clearly in-range dated changes, say: No changes found in the requested timeframe based on provided context.\n\n"+
+			"## Today\n%s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Question\n%s",
+		today, changeCtx, codeCtx, req.QueryText,
 	)
 
 	return []Message{{Role: "user", Content: directPrompt}}
