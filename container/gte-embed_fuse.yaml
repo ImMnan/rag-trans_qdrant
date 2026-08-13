@@ -1,0 +1,124 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: rag-gateway-ksa
+  namespace: hawk
+  annotations:
+    iam.gke.io/gcp-service-account: support-sales@appspot.gserviceaccount.com
+    # Workload Identity binding applied:
+    # gcloud iam service-accounts add-iam-policy-binding support-sales@appspot.gserviceaccount.com \
+    #   --role=roles/iam.workloadIdentityUser \
+    #   --member="serviceAccount:support-sales.svc.id.goog[hawk/rag-gateway-ksa]"
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: gte-embed-service
+  namespace: hawk
+spec:
+  ports:
+  - name: embed-http
+    port: 80
+    protocol: TCP
+    targetPort: 8000
+  # The label selector should match the deployment labels & it is useful for prefix caching feature
+  selector:
+    app: gte-embed
+  sessionAffinity: None
+  type: ClusterIP
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gte-embed-fuse
+  namespace: hawk
+  labels:
+    app: gte-embed
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: gte-embed
+  template:
+    metadata:
+      labels:
+        app: gte-embed
+    spec:
+      serviceAccountName: rag-gateway-ksa
+      automountServiceAccountToken: true
+      volumes:
+      - name: tmp
+        emptyDir: {}
+      - name: model-cache
+        persistentVolumeClaim:
+          claimName: embed-e5large-cache
+      initContainers:
+      - name: download-models-gcs
+        image: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
+        command:
+          - sh
+          - -c
+          - |
+            set -euo pipefail
+            mkdir -p /models/hub
+            
+            # 1. Sync the new gte-model cache directory from GCS into your local PVC
+            gcloud storage rsync -r gs://rag-model-weights-hawk/gte-model /models/hub
+            
+            # 2. Test for the new model directory instead of the old e5 one
+            test -d /models/hub/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct
+            
+            ls -la /models/hub | head -n 40
+        volumeMounts:
+        - name: model-cache
+          mountPath: /models
+      containers:
+      - name: e5large-ctr
+        image: immnan/embed-e5large-py:0.2.3
+        imagePullPolicy: IfNotPresent
+        ports:
+        - containerPort: 8000
+          name: embed-http
+        env:
+        - name: EMBED_MODEL
+          value: "intfloat/multilingual-e5-large"
+        - name: HF_HOME
+          value: "/models"
+        - name: HF_HUB_CACHE
+          value: "/models/hub"
+        - name: HF_HUB_OFFLINE
+          value: "1"
+        - name: TRANSFORMERS_OFFLINE
+          value: "1"
+        volumeMounts:
+        - name: tmp
+          mountPath: /tmp
+          readOnly: false
+        - name: model-cache
+          mountPath: /models
+          readOnly: true
+        resources:
+          requests:
+            cpu: "1"
+            memory: 4Gi
+          limits:
+            cpu: "2"
+            memory: 8Gi
+      # Bind the pod to the KSA that is linked to a GSA with storage.objectViewer
+      # (or storage.objectAdmin if you need writes) on the bucket.
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: embed-e5large-cache
+  namespace: hawk
+spec:
+  storageClassName: premium-rwo
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 20Gi
+      
