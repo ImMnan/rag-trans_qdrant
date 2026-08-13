@@ -30,6 +30,7 @@ func main() {
 		Str("port", cfg.FiberPort).
 		Str("qdrant_host", cfg.QdrantHost).
 		Str("vllm_host", cfg.VLLMHost).
+		Str("embed_client_type", cfg.EmbedClientType).
 		Str("embed_host", cfg.EmbedHost).
 		Str("Orca version", orcaVersion).
 		Str("maintainer", "https://github.com/ImMnan").
@@ -37,7 +38,7 @@ func main() {
 
 	// --- Clients ---
 	qdrantClient := qdrant.NewClient(cfg.QdrantHost, log.Logger)
-	embedClient := embedder.NewClient(buildHTTPURL(cfg.EmbedHost), log.Logger)
+	embedClient := embedder.NewClientFromType(cfg.EmbedClientType, buildHTTPURL(cfg.EmbedHost), log.Logger)
 	log.Info().Str("url", buildHTTPURL(cfg.VLLMHost)).Msg("vllm transport: http")
 	vllmClient := vllm.NewHTTPClient(buildHTTPURL(cfg.VLLMHost), cfg.ModelName, cfg.VLLMTimeout, log.Logger)
 

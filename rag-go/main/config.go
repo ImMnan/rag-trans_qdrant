@@ -15,6 +15,7 @@ type config struct {
 	VLLMTimeout      time.Duration
 	QdrantHost       string // host or host:port
 	VLLMHost         string // host or host:port
+	EmbedClientType  string
 	EmbedHost        string // host or host:port
 	ModelName        string
 	ChangeCollection string
@@ -24,6 +25,9 @@ type config struct {
 }
 
 func loadConfig() config {
+	embedServiceHostFallback := getEnv("EMBED_SERVICE_HOST", "embed-e5-service")
+	embedClientType, embedHost := parseEmbedServiceType(getEnv("EMBED_SERVICE_TYPE", "e5:embed-e5-service"), embedServiceHostFallback)
+
 	return config{
 		FiberPort:        getEnv("FIBER_PORT", "8080"),
 		ReadTimeout:      getEnvDuration("FIBER_READ_TIMEOUT", 30*time.Second),
@@ -32,13 +36,37 @@ func loadConfig() config {
 		VLLMTimeout:      getEnvDuration("VLLM_TIMEOUT", 120*time.Second),
 		QdrantHost:       normalizeHostPort(getEnv("QDRANT_HOST", "qdrant-service"), 6334),
 		VLLMHost:         normalizeHostPort(getEnv("VLLM_HOST", "qwen-3-service"), 80),
-		EmbedHost:        normalizeHostPort(getEnv("EMBED_SERVICE_HOST", "embed-e5-service"), 80),
+		EmbedClientType:  embedClientType,
+		EmbedHost:        normalizeHostPort(embedHost, 80),
 		ModelName:        getEnv("QWEN_MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct"),
 		ChangeCollection: getEnv("CHANGE_COLLECTION", "change_chunks"),
 		CodeCollection:   getEnv("CODE_COLLECTION", "code_chunks"),
 		DocCollection:    getEnv("DOC_COLLECTION", "doc_chunks"),
 		GenDocCollection: getEnv("GEN_DOC_COLLECTION", "gen_doc_chunks"),
 	}
+}
+
+func parseEmbedServiceType(raw string, fallbackHost string) (string, string) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "e5", fallbackHost
+	}
+
+	parts := strings.SplitN(raw, ":", 2)
+	if len(parts) == 1 {
+		return strings.TrimSpace(parts[0]), fallbackHost
+	}
+
+	clientType := strings.TrimSpace(parts[0])
+	host := strings.TrimSpace(parts[1])
+	if host == "" {
+		host = fallbackHost
+	}
+	if clientType == "" {
+		clientType = "e5"
+	}
+
+	return clientType, host
 }
 
 // normalizeHostPort ensures host:port format, using defaultPort if no port specified.
