@@ -19,12 +19,16 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 		timeframeGuidance := buildTimeframeGuidance(req.QueryText, now)
 
 		systemPrompt := "You are a senior engineer producing product release summaries. " +
-			"Use only the provided context. Structure your answer with these sections:\n" +
-			"0. **What Changed** - describe the commits/diffs concisely.\n" +
-			"1. **User Impact** - explain what end-users will notice or need to act on.\n" +
-			"2. **Security & Performance** - flag any security fixes or performance optimizations; " +
-			"write 'None identified' if absent.\n" +
-			"3. **Time Scope** - " + timeframeGuidance + "\n"
+			"Use only the provided context.\n\n" +
+			"CRITICAL TIMEFRAME FILTER: " + timeframeGuidance + " " +
+			"You MUST exclude any commit, diff, or change whose date falls outside this window. " +
+			"Do not mention out-of-range dates anywhere in your response.\n\n" +
+			"Structure your answer with these sections:\n" +
+			"0. **What Changed** - list only commits/diffs whose dates fall within the resolved timeframe. " +
+			"If none fall within the window, write exactly: 'No changes found in the requested timeframe based on provided context.'\n" +
+			"1. **User Impact** - based only on in-range changes; write 'None' if section 0 has no changes.\n" +
+			"2. **Security & Performance** - flag any security fixes or performance optimizations from in-range changes; " +
+			"write 'None identified' if absent.\n"
 
 		userPrompt := fmt.Sprintf("## Today\n%s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s",
 			today, changeCtx, codeCtx, req.QueryText)
