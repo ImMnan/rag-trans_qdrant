@@ -20,12 +20,11 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 
 		systemPrompt := "You are a senior engineer producing product release summaries. " +
 			"Use only the provided context. Structure your answer with these sections:\n" +
-			"0. **Time Window Interpreted** - print the exact date boundary you applied in YYYY-MM-DD format (for example: Window: 2026-08-02 to 2026-08-12), using ONLY the provided Today date as reference for relative periods.\n" +
-			"1. **What Changed** - describe the commits/diffs concisely.\n" +
-			"2. **User Impact** - explain what end-users will notice or need to act on.\n" +
-			"3. **Security & Performance** - flag any security fixes or performance optimizations; " +
+			"0. **What Changed** - describe the commits/diffs concisely.\n" +
+			"1. **User Impact** - explain what end-users will notice or need to act on.\n" +
+			"2. **Security & Performance** - flag any security fixes or performance optimizations; " +
 			"write 'None identified' if absent.\n" +
-			"4. **Time Scope** - " + timeframeGuidance + "\n"
+			"3. **Time Scope** - " + timeframeGuidance + "\n"
 
 		userPrompt := fmt.Sprintf("## Today\n%s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s",
 			today, changeCtx, codeCtx, req.QueryText)
@@ -46,8 +45,7 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 			"otherwise say 'Unknown based on provided context'.\n\n"+
 			"Timeframe rules for direct answers:\n"+
 			"1. %s\n"+
-			"2. Echo the interpreted boundary as: Window: YYYY-MM-DD to YYYY-MM-DD.\n"+
-			"3. If there are no clearly in-range dated changes, say: No changes found in the requested timeframe based on provided context.\n\n"+
+			"2. If there are no clearly in-range dated changes, say: No changes found in the requested timeframe based on provided context.\n\n"+
 			"## Today\n%s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Question\n%s",
 		timeframeGuidance, today, changeCtx, codeCtx, req.QueryText,
 	)

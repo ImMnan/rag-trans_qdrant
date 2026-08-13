@@ -42,16 +42,16 @@ type HTTPClient struct {
 	log        zerolog.Logger
 }
 
-func NewHTTPClient(baseURL string, modelName string, log zerolog.Logger) *HTTPClient {
+func NewHTTPClient(baseURL string, modelName string, timeout time.Duration, log zerolog.Logger) *HTTPClient {
 	return &HTTPClient{
 		baseURL:   baseURL,
 		modelName: modelName,
 		httpClient: &http.Client{
-			Timeout: 120 * time.Second,
+			Timeout: timeout,
 			Transport: &http.Transport{
 				MaxIdleConns:        10,
 				MaxIdleConnsPerHost: 10,
-				IdleConnTimeout:     90 * time.Second,
+				IdleConnTimeout:     timeout * 3 / 4, // 75% of client timeout
 			},
 		},
 		log: log,

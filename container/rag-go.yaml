@@ -37,7 +37,7 @@ spec:
         emptyDir: {}
       containers:
       - name: rag-go-ctr
-        image: immnan/rag-go:0.3.3
+        image: immnan/rag-go:0.5.13
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
@@ -63,6 +63,14 @@ spec:
           value: "doc_chunks"
         - name: GEN_DOC_COLLECTION
           value: "gen_doc_chunks"
+        - name: FIBER_READ_TIMEOUT
+          value: "30"
+        - name: FIBER_WRITE_TIMEOUT
+          value: "120"
+        - name: FIBER_IDLE_TIMEOUT
+          value: "60"
+        - name: VLLM_TIMEOUT
+          value: "180" 
         volumeMounts:
         - name: tmp
           mountPath: /tmp         

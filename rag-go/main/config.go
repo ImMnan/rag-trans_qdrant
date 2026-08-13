@@ -12,6 +12,7 @@ type config struct {
 	ReadTimeout      time.Duration
 	WriteTimeout     time.Duration
 	IdleTimeout      time.Duration
+	VLLMTimeout      time.Duration
 	QdrantHost       string // host or host:port
 	VLLMHost         string // host or host:port
 	EmbedHost        string // host or host:port
@@ -28,6 +29,7 @@ func loadConfig() config {
 		ReadTimeout:      getEnvDuration("FIBER_READ_TIMEOUT", 30*time.Second),
 		WriteTimeout:     getEnvDuration("FIBER_WRITE_TIMEOUT", 120*time.Second),
 		IdleTimeout:      getEnvDuration("FIBER_IDLE_TIMEOUT", 60*time.Second),
+		VLLMTimeout:      getEnvDuration("VLLM_TIMEOUT", 120*time.Second),
 		QdrantHost:       normalizeHostPort(getEnv("QDRANT_HOST", "qdrant-service"), 6334),
 		VLLMHost:         normalizeHostPort(getEnv("VLLM_HOST", "qwen-3-service"), 80),
 		EmbedHost:        normalizeHostPort(getEnv("EMBED_SERVICE_HOST", "embed-e5-service"), 80),

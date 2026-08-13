@@ -123,7 +123,7 @@ type DefaultDocDecisionEngine struct {
 }
 
 func NewDefaultDocDecisionEngine() *DefaultDocDecisionEngine {
-	return &DefaultDocDecisionEngine{MinDocMatchConfidence: 0.55}
+	return &DefaultDocDecisionEngine{MinDocMatchConfidence: 0.75}
 }
 
 func (e *DefaultDocDecisionEngine) Decide(extract DocExtractResult, audit DocAuditResult) DocDecision {

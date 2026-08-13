@@ -25,7 +25,7 @@ func main() {
 
 	// --- Config from env ---
 	cfg := loadConfig()
-	orcaVersion := "0.5.7"
+	orcaVersion := "0.5.13"
 	log.Info().
 		Str("port", cfg.FiberPort).
 		Str("qdrant_host", cfg.QdrantHost).
@@ -39,7 +39,7 @@ func main() {
 	qdrantClient := qdrant.NewClient(cfg.QdrantHost, log.Logger)
 	embedClient := embedder.NewClient(buildHTTPURL(cfg.EmbedHost), log.Logger)
 	log.Info().Str("url", buildHTTPURL(cfg.VLLMHost)).Msg("vllm transport: http")
-	vllmClient := vllm.NewHTTPClient(buildHTTPURL(cfg.VLLMHost), cfg.ModelName, log.Logger)
+	vllmClient := vllm.NewHTTPClient(buildHTTPURL(cfg.VLLMHost), cfg.ModelName, cfg.VLLMTimeout, log.Logger)
 
 	// --- Pipeline ---
 	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection)
