@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 	"github.com/rs/zerolog"
 
@@ -35,6 +37,8 @@ type RAGRequest struct {
 	Limit      int    `json:"limit"`
 	TokenLimit int    `json:"token_limit"`
 	Component  string `json:"component,omitempty"` // optional, if repoID is specified.
+	FromDate   string `json:"from_date,omitempty"` // YYYY-MM-DD, optional; if provided, filters chunks to this date or later.
+	ToDate     string `json:"to_date,omitempty"`   // YYYY-MM-DD, optional; if provided, filters chunks to this date or earlier.
 }
 
 func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
@@ -53,12 +57,21 @@ func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
 		req.Limit = 5
 	}
 
+	// Default to last 30 days if no explicit date range provided.
+	if req.FromDate == "" && req.ToDate == "" {
+		now := time.Now()
+		req.FromDate = now.AddDate(0, 0, -30).Format("2006-01-02")
+		req.ToDate = now.Format("2006-01-02")
+	}
+
 	rp.log.Info().
 		Str("repo_id", req.RepoID).
 		Str("type", req.Type).
 		Str("component", req.Component).
 		Int("limit", req.Limit).
 		Int("token_limit", req.TokenLimit).
+		Str("from_date", req.FromDate).
+		Str("to_date", req.ToDate).
 		Msg("rag request received")
 
 	result, err := rp.pipe.Execute(c.Context(), pipeline.Request{
@@ -68,6 +81,8 @@ func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
 		Limit:      req.Limit,
 		TokenLimit: req.TokenLimit,
 		Component:  req.Component,
+		FromDate:   req.FromDate,
+		ToDate:     req.ToDate,
 	})
 	if err != nil {
 		rp.log.Error().Err(err).Str("repo_id", req.RepoID).Msg("pipeline execution failed")
@@ -93,10 +108,19 @@ func (dp *docHandler) handleDocGenerate(c *fiber.Ctx) error {
 		req.Limit = 5
 	}
 
+	// Default to last 30 days if no explicit date range provided.
+	if req.FromDate == "" && req.ToDate == "" {
+		now := time.Now()
+		req.FromDate = now.AddDate(0, 0, -30).Format("2006-01-02")
+		req.ToDate = now.Format("2006-01-02")
+	}
+
 	dp.log.Info().
 		Str("repo_id", req.RepoID).
 		Str("type", req.Type).
 		Int("limit", req.Limit).
+		Str("from_date", req.FromDate).
+		Str("to_date", req.ToDate).
 		Msg("doc generate/update request received")
 
 	result, err := dp.pipe.Execute(c.Context(), pipeline.Request{
@@ -106,6 +130,8 @@ func (dp *docHandler) handleDocGenerate(c *fiber.Ctx) error {
 		Limit:      req.Limit,
 		TokenLimit: req.TokenLimit,
 		Component:  req.Component,
+		FromDate:   req.FromDate,
+		ToDate:     req.ToDate,
 	})
 	if err != nil {
 		dp.log.Error().Err(err).Str("repo_id", req.RepoID).Str("component", req.Component).Msg("pipeline execution failed")

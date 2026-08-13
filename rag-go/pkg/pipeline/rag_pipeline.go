@@ -36,6 +36,8 @@ type Request struct {
 	TokenLimit int
 	RepoName   string
 	Component  string
+	FromDate   string // YYYY-MM-DD, optional; filters chunks to this date or later.
+	ToDate     string // YYYY-MM-DD, optional; filters chunks to this date or earlier.
 }
 
 // Response is what the pipeline returns to the handler.

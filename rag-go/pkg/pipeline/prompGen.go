@@ -16,18 +16,15 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 	if strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
 		now := time.Now()
 		today := now.Format("2006-01-02")
-		timeframeGuidance := buildTimeframeGuidance(req.QueryText, now)
+		timeframeGuidance := buildTimeframeGuidance(req.QueryText, now, req.FromDate, req.ToDate)
 
 		systemPrompt := "You are a senior engineer producing product release summaries. " +
-			"Use only the provided context.\n\n" +
-			"CRITICAL TIMEFRAME FILTER: " + timeframeGuidance + " " +
-			"You MUST exclude any commit, diff, or change whose date falls outside this window. " +
-			"Do not mention out-of-range dates anywhere in your response.\n\n" +
+			"Use only the provided context. CRITICAL: " + timeframeGuidance + "\n\n" +
 			"Structure your answer with these sections:\n" +
-			"0. **What Changed** - list only commits/diffs whose dates fall within the resolved timeframe. " +
-			"If none fall within the window, write exactly: 'No changes found in the requested timeframe based on provided context.'\n" +
-			"1. **User Impact** - based only on in-range changes; write 'None' if section 0 has no changes.\n" +
-			"2. **Security & Performance** - flag any security fixes or performance optimizations from in-range changes; " +
+			"0. **What Changed** - describe commits/diffs within the timeframe concisely. " +
+			"If no changes exist in the timeframe, write exactly: 'No changes found in the requested timeframe based on provided context.'\n" +
+			"1. **User Impact** - explain what end-users will notice or need to act on (based on in-timeframe changes only).\n" +
+			"2. **Security & Performance** - flag any security fixes or performance optimizations (from in-timeframe changes); " +
 			"write 'None identified' if absent.\n"
 
 		userPrompt := fmt.Sprintf("## Today\n%s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s",
@@ -39,19 +36,13 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 		}
 	}
 
-	now := time.Now()
-	today := now.Format("2006-01-02")
-	timeframeGuidance := buildTimeframeGuidance(req.QueryText, now)
 	directPrompt := fmt.Sprintf(
 		"Answer the user question using only the context below. "+
 			"Be concise and factual. If asked whether a feature is supported, answer with 'Yes' or 'No' "+
 			"and include when it first appears in the provided context if available; "+
 			"otherwise say 'Unknown based on provided context'.\n\n"+
-			"Timeframe rules for direct answers:\n"+
-			"1. %s\n"+
-			"2. If there are no clearly in-range dated changes, say: No changes found in the requested timeframe based on provided context.\n\n"+
-			"## Today\n%s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Question\n%s",
-		timeframeGuidance, today, changeCtx, codeCtx, req.QueryText,
+			"## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Question\n%s",
+		changeCtx, codeCtx, req.QueryText,
 	)
 
 	return []Message{{Role: "user", Content: directPrompt}}
@@ -64,7 +55,19 @@ func joinChunks(chunks []string, fallback string) string {
 	return strings.Join(chunks, "\n---\n")
 }
 
-func buildTimeframeGuidance(queryText string, now time.Time) string {
+func buildTimeframeGuidance(queryText string, now time.Time, fromDate, toDate string) string {
+	// If explicit dates provided, use them as the canonical window.
+	if fromDate != "" && toDate != "" {
+		return fmt.Sprintf("Use exact window from request: %s to %s. Exclude changes outside this range.", fromDate, toDate)
+	}
+	if fromDate != "" {
+		return fmt.Sprintf("Use exact start date from request: %s onwards. Exclude changes before this date.", fromDate)
+	}
+	if toDate != "" {
+		return fmt.Sprintf("Use exact end date from request: %s or earlier. Exclude changes after this date.", toDate)
+	}
+
+	// Fall back to parsing from query text if no explicit dates.
 	query := strings.ToLower(strings.TrimSpace(queryText))
 	base := "If the request specifies a timeframe, treat Today as the only reference point for relative windows, never infer from commit history, exclude out-of-range items, and do not cite out-of-range dates/months."
 	if query == "" {
