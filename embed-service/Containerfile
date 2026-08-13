@@ -38,7 +38,7 @@ COPY --from=builder /root/.local /root/.local
 ENV PATH=/root/.local/bin:$PATH
 
 # Copy your complete pure-cluster Python backend script
-COPY main.py .
+COPY e5-main.py .
 
 # Path reserved for external model mount (for PVC or GCS Fuse)
 RUN mkdir -p /models
