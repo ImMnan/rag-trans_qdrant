@@ -110,6 +110,12 @@ func (c *Client) Query(ctx context.Context, collection string, vector []float32,
 		}
 
 		chunks = append(chunks, text)
+		c.log.Debug().
+			Str("collection", collection).
+			Str("point_id", pointID(hit.Id)).
+			Float32("score", hit.Score).
+			Int("order", len(chunks)-1).
+			Msg("qdrant chunk retrieved")
 	}
 
 	c.log.Debug().
@@ -118,4 +124,14 @@ func (c *Client) Query(ctx context.Context, collection string, vector []float32,
 		Msg("qdrant query complete")
 
 	return chunks, nil
+}
+
+func pointID(id *qdrant.PointId) string {
+	if id == nil {
+		return ""
+	}
+	if uuid := id.GetUuid(); uuid != "" {
+		return uuid
+	}
+	return fmt.Sprintf("%d", id.GetNum())
 }

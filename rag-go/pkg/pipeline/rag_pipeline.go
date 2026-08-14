@@ -2,6 +2,9 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sync"
 
@@ -178,6 +181,11 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	maxTokens := ResolveTokenBudget(req, messages)
 
 	// 4. Call LLM
+	p.log.Debug().
+		Str("messages_sha256", hashMessages(messages)).
+		Int("message_count", len(messages)).
+		Int("max_tokens", maxTokens).
+		Msg("assembled vllm messages")
 	answer, err := p.vllm.Complete(ctx, messages, maxTokens)
 	if err != nil {
 		return nil, fmt.Errorf("vllm complete: %w", err)
@@ -196,6 +204,15 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 			QueryText: req.QueryText,
 		},
 	}, nil
+}
+
+func hashMessages(messages []Message) string {
+	b, err := json.Marshal(messages)
+	if err != nil {
+		return "marshal-error"
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
 }
 
 func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, error) {
