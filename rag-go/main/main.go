@@ -42,7 +42,7 @@ func main() {
 	vllmClient := vllm.NewHTTPClient(buildHTTPURL(cfg.VLLMHost), cfg.ModelName, cfg.VLLMTimeout, log.Logger)
 
 	// --- Pipeline ---
-	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection)
+	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection, cfg.ChangeDateField)
 	docPipe := pipeline.NewDoc(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection, cfg.DocCollection, cfg.GenDocCollection)
 
 	// --- Fiber app ---

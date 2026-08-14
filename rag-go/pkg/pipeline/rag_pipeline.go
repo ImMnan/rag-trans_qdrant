@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/rs/zerolog"
@@ -14,6 +15,7 @@ import (
 // Interfaces — swap real clients for mocks in tests.
 type QdrantQuerier interface {
 	Query(ctx context.Context, collection string, vector []float32, repoID string, limit int) ([]string, error)
+	QueryChanges(ctx context.Context, collection string, vector []float32, repoID string, limit int, fromDate, toDate, dateField string) ([]string, error)
 }
 
 type VLLMCompleter interface {
@@ -64,6 +66,7 @@ type RAGPipeline struct {
 	embedder         Embedder
 	changeCollection string
 	codeCollection   string
+	changeDateField  string
 	log              zerolog.Logger
 }
 
@@ -86,6 +89,7 @@ func New(
 	embedder Embedder,
 	changeCollection string,
 	codeCollection string,
+	changeDateField string,
 ) *RAGPipeline {
 	return &RAGPipeline{
 		qdrant:           qdrant,
@@ -93,6 +97,7 @@ func New(
 		embedder:         embedder,
 		changeCollection: changeCollection,
 		codeCollection:   codeCollection,
+		changeDateField:  changeDateField,
 		log:              zerolog.Nop(),
 	}
 }
@@ -156,7 +161,13 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.changeCollection, vector, qdrantQuery, req.Limit)
+		var chunks []string
+		var err error
+		if strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
+			chunks, err = p.qdrant.QueryChanges(ctx, p.changeCollection, vector, qdrantQuery, req.Limit, req.FromDate, req.ToDate, p.changeDateField)
+		} else {
+			chunks, err = p.qdrant.Query(ctx, p.changeCollection, vector, qdrantQuery, req.Limit)
+		}
 		changeCh <- result{chunks, err}
 	}()
 	go func() {

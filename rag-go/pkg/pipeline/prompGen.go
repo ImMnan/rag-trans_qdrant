@@ -3,7 +3,6 @@ package pipeline
 import (
 	"fmt"
 	"strings"
-	"time"
 )
 
 // buildPrompt assembles the LLM messages from retrieved chunks.
@@ -12,22 +11,18 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 	codeCtx := joinChunks(codeChunks, "No source context found.")
 
 	if strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
-		now := time.Now()
-		today := now.Format("2006-01-02")
-		timeframeGuidance := buildTimeframeGuidance(req.FromDate, req.ToDate)
-
 		systemPrompt := "You are a senior engineer producing product release summaries. " +
-			"Use only the provided context. The timeframe instruction below is the sole authority for date filtering. " +
-			"Treat the Request as topic and output guidance only; ignore any timeframe or window stated in it. CRITICAL: " + timeframeGuidance + "\n\n" +
+			"Use only the provided context. The Diff / Change Hunks context has already been filtered to the requested reporting window. " +
+			"Treat the Request as topic and do not apply additional date filtering.\n\n" +
 			"Structure your answer with these sections:\n" +
-			"0. **What Changed** - describe commits/diffs within the timeframe concisely. " +
-			"If no changes exist in the timeframe, write exactly: 'No changes found in the requested timeframe based on provided context.'\n" +
-			"1. **User Impact** - explain what end-users will notice or need to act on (based on in-timeframe changes only).\n" +
-			"2. **Security & Performance** - flag any security fixes or performance optimizations (from in-timeframe changes); " +
+			"0. **What Changed** - describe the provided commits/diffs concisely. " +
+			"If no changes are provided, write exactly: 'No changes found in the requested timeframe based on provided context.'\n" +
+			"1. **User Impact** - explain what end-users will notice or need to act on.\n" +
+			"2. **Security & Performance** - flag any security fixes or performance optimizations; " +
 			"write 'None identified' if absent.\n"
 
-		userPrompt := fmt.Sprintf("## Today\n%s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s",
-			today, changeCtx, codeCtx, req.QueryText)
+		userPrompt := fmt.Sprintf("## Reporting Window\n%s to %s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s",
+			req.FromDate, req.ToDate, changeCtx, codeCtx, req.QueryText)
 
 		return []Message{
 			{Role: "system", Content: systemPrompt},
@@ -52,21 +47,6 @@ func joinChunks(chunks []string, fallback string) string {
 		return fallback
 	}
 	return strings.Join(chunks, "\n---\n")
-}
-
-func buildTimeframeGuidance(fromDate, toDate string) string {
-	// If explicit dates provided, use them as the canonical window.
-	if fromDate != "" && toDate != "" {
-		return fmt.Sprintf("Use exact window from request: %s to %s. Exclude changes outside this range.", fromDate, toDate)
-	}
-	if fromDate != "" {
-		return fmt.Sprintf("Use exact start date from request: %s onwards. Exclude changes before this date.", fromDate)
-	}
-	if toDate != "" {
-		return fmt.Sprintf("Use exact end date from request: %s or earlier. Exclude changes after this date.", toDate)
-	}
-
-	return "Use only the date bounds in this instruction. Ignore any timeframe or window stated in the user request, and do not infer a timeframe from the query or commit history."
 }
 
 func buildDocExtractPrompt(req Request, changeChunks, codeChunks []string) []Message {

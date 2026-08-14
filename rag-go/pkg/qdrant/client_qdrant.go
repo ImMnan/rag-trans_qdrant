@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -55,17 +56,46 @@ func dialWithRetry(host string, log zerolog.Logger) (*grpc.ClientConn, error) {
 
 // Query retrieves text chunks from a collection filtered by repo_id.
 func (c *Client) Query(ctx context.Context, collection string, vector []float32, repoID string, limit int) ([]string, error) {
+	return c.query(ctx, collection, vector, repoID, limit, nil)
+}
+
+// QueryChanges filters only change history by its inclusive date window.
+func (c *Client) QueryChanges(ctx context.Context, collection string, vector []float32, repoID string, limit int, fromDate, toDate, dateField string) ([]string, error) {
+	from, err := time.Parse("2006-01-02", fromDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid from_date %q: %w", fromDate, err)
+	}
+	to, err := time.Parse("2006-01-02", toDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid to_date %q: %w", toDate, err)
+	}
+	if from.After(to) {
+		return nil, fmt.Errorf("from_date %q is after to_date %q", fromDate, toDate)
+	}
+	if dateField == "" {
+		dateField = "date"
+	}
+
+	return c.query(ctx, collection, vector, repoID, limit, qdrant.NewDatetimeRange(dateField, &qdrant.DatetimeRange{
+		Gte: timestamppb.New(from.UTC()),
+		Lte: timestamppb.New(to.UTC().Add(24*time.Hour - time.Nanosecond)),
+	}))
+}
+
+func (c *Client) query(ctx context.Context, collection string, vector []float32, repoID string, limit int, dateCondition *qdrant.Condition) ([]string, error) {
 	if c.points == nil {
 		return nil, fmt.Errorf("qdrant client not initialised")
+	}
+	must := []*qdrant.Condition{qdrant.NewMatch("repo_id", repoID)}
+	if dateCondition != nil {
+		must = append(must, dateCondition)
 	}
 
 	resp, err := c.points.Query(ctx, &qdrant.QueryPoints{
 		CollectionName: collection,
 		Query:          qdrant.NewQuery(vector...),
 		Filter: &qdrant.Filter{
-			Must: []*qdrant.Condition{
-				qdrant.NewMatch("repo_id", repoID),
-			},
+			Must: must,
 		},
 		Limit:       qdrant.PtrOf(uint64(limit)),
 		WithPayload: qdrant.NewWithPayload(true),

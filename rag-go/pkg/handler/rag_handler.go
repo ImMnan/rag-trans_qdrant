@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/gofiber/fiber/v2"
@@ -65,6 +67,19 @@ func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
 	}
 	if req.Limit <= 0 {
 		req.Limit = 5
+	}
+	if req.FromDate != "" {
+		if _, err := time.Parse("2006-01-02", req.FromDate); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("from_date must use YYYY-MM-DD: %v", err)})
+		}
+	}
+	if req.ToDate != "" {
+		if _, err := time.Parse("2006-01-02", req.ToDate); err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": fmt.Sprintf("to_date must use YYYY-MM-DD: %v", err)})
+		}
+	}
+	if req.FromDate != "" && req.ToDate != "" && strings.Compare(req.FromDate, req.ToDate) > 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "from_date must be on or before to_date"})
 	}
 
 	// Default to last 30 days if no explicit date range provided.
