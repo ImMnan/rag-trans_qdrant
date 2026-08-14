@@ -2,8 +2,6 @@ package pipeline
 
 import (
 	"fmt"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -16,10 +14,11 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 	if strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
 		now := time.Now()
 		today := now.Format("2006-01-02")
-		timeframeGuidance := buildTimeframeGuidance(req.QueryText, now, req.FromDate, req.ToDate)
+		timeframeGuidance := buildTimeframeGuidance(req.FromDate, req.ToDate)
 
 		systemPrompt := "You are a senior engineer producing product release summaries. " +
-			"Use only the provided context. CRITICAL: " + timeframeGuidance + "\n\n" +
+			"Use only the provided context. The timeframe instruction below is the sole authority for date filtering. " +
+			"Treat the Request as topic and output guidance only; ignore any timeframe or window stated in it. CRITICAL: " + timeframeGuidance + "\n\n" +
 			"Structure your answer with these sections:\n" +
 			"0. **What Changed** - describe commits/diffs within the timeframe concisely. " +
 			"If no changes exist in the timeframe, write exactly: 'No changes found in the requested timeframe based on provided context.'\n" +
@@ -55,7 +54,7 @@ func joinChunks(chunks []string, fallback string) string {
 	return strings.Join(chunks, "\n---\n")
 }
 
-func buildTimeframeGuidance(queryText string, now time.Time, fromDate, toDate string) string {
+func buildTimeframeGuidance(fromDate, toDate string) string {
 	// If explicit dates provided, use them as the canonical window.
 	if fromDate != "" && toDate != "" {
 		return fmt.Sprintf("Use exact window from request: %s to %s. Exclude changes outside this range.", fromDate, toDate)
@@ -67,57 +66,7 @@ func buildTimeframeGuidance(queryText string, now time.Time, fromDate, toDate st
 		return fmt.Sprintf("Use exact end date from request: %s or earlier. Exclude changes after this date.", toDate)
 	}
 
-	// Fall back to parsing from query text if no explicit dates.
-	query := strings.ToLower(strings.TrimSpace(queryText))
-	base := "If the request specifies a timeframe, treat Today as the only reference point for relative windows, never infer from commit history, exclude out-of-range items, and do not cite out-of-range dates/months."
-	if query == "" {
-		return base
-	}
-
-	if m := regexp.MustCompile(`\blast\s+(\d{1,3})\s+days?\b`).FindStringSubmatch(query); len(m) == 2 {
-		days, err := strconv.Atoi(m[1])
-		if err == nil && days > 0 {
-			start := now.AddDate(0, 0, -(days - 1)).Format("2006-01-02")
-			end := now.Format("2006-01-02")
-			return fmt.Sprintf("Resolved window from query: %s to %s. Use this exact range.", start, end)
-		}
-	}
-
-	if m := regexp.MustCompile(`\bin\s+([a-z]+)\s+(\d{4})\b`).FindStringSubmatch(query); len(m) == 3 {
-		if month, ok := parseMonthName(m[1]); ok {
-			year, err := strconv.Atoi(m[2])
-			if err == nil {
-				start := time.Date(year, month, 1, 0, 0, 0, 0, now.Location())
-				end := start.AddDate(0, 1, 0).Add(-24 * time.Hour)
-				return fmt.Sprintf("Resolved window from query: %s to %s. Use this exact range.", start.Format("2006-01-02"), end.Format("2006-01-02"))
-			}
-		}
-	}
-
-	if m := regexp.MustCompile(`\bbetween\s+(\d{4}-\d{2}-\d{2})\s+(?:and|to)\s+(\d{4}-\d{2}-\d{2})\b`).FindStringSubmatch(query); len(m) == 3 {
-		return fmt.Sprintf("Resolved window from query: %s to %s. Use this exact range.", m[1], m[2])
-	}
-
-	return base
-}
-
-func parseMonthName(s string) (time.Month, bool) {
-	months := map[string]time.Month{
-		"january":   time.January,
-		"february":  time.February,
-		"march":     time.March,
-		"april":     time.April,
-		"may":       time.May,
-		"june":      time.June,
-		"july":      time.July,
-		"august":    time.August,
-		"september": time.September,
-		"october":   time.October,
-		"november":  time.November,
-		"december":  time.December,
-	}
-	m, ok := months[strings.ToLower(strings.TrimSpace(s))]
-	return m, ok
+	return "Use only the date bounds in this instruction. Ignore any timeframe or window stated in the user request, and do not infer a timeframe from the query or commit history."
 }
 
 func buildDocExtractPrompt(req Request, changeChunks, codeChunks []string) []Message {
