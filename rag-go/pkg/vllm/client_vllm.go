@@ -18,6 +18,8 @@ type chatRequest struct {
 	Model       string        `json:"model"`
 	Messages    []chatMessage `json:"messages"`
 	Temperature float32       `json:"temperature"`
+	TopP        float32       `json:"top_p"`
+	Seed        int           `json:"seed"`
 	TokenLimit  int           `json:"max_tokens,omitempty"`
 }
 
@@ -42,6 +44,8 @@ type HTTPClient struct {
 	log        zerolog.Logger
 }
 
+const fixedSeed = 42
+
 func NewHTTPClient(baseURL string, modelName string, timeout time.Duration, log zerolog.Logger) *HTTPClient {
 	return &HTTPClient{
 		baseURL:   baseURL,
@@ -60,14 +64,19 @@ func NewHTTPClient(baseURL string, modelName string, timeout time.Duration, log 
 
 // Complete sends messages to vLLM via the OpenAI-compatible HTTP API.
 func (c *HTTPClient) Complete(ctx context.Context, messages []pipeline.Message, maxTokens int) (string, error) {
-	temperature := inferTemperature(messages)
-
 	chatMsgs := make([]chatMessage, len(messages))
 	for i, m := range messages {
 		chatMsgs[i] = chatMessage{Role: m.Role, Content: m.Content}
 	}
 
-	body, err := json.Marshal(chatRequest{Model: c.modelName, Messages: chatMsgs, Temperature: temperature, TokenLimit: maxTokens})
+	body, err := json.Marshal(chatRequest{
+		Model:       c.modelName,
+		Messages:    chatMsgs,
+		Temperature: 0,
+		TopP:        1,
+		Seed:        fixedSeed,
+		TokenLimit:  maxTokens,
+	})
 	if err != nil {
 		return "", fmt.Errorf("marshal vllm request: %w", err)
 	}
@@ -99,14 +108,4 @@ func (c *HTTPClient) Complete(ctx context.Context, messages []pipeline.Message, 
 	answer := result.Choices[0].Message.Content
 	c.log.Debug().Int("response_len", len(answer)).Msg("vllm http completion received")
 	return answer, nil
-}
-
-// ── Shared helpers ────────────────────────────────────────────────────────────
-
-// inferTemperature returns 0.3 for standard (system prompt) requests, 0.1 for direct.
-func inferTemperature(messages []pipeline.Message) float32 {
-	if len(messages) > 1 && messages[0].Role == "system" {
-		return 0.3
-	}
-	return 0.1
 }
