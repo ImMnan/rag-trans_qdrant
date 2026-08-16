@@ -55,12 +55,12 @@ func dialWithRetry(host string, log zerolog.Logger) (*grpc.ClientConn, error) {
 }
 
 // Query retrieves text chunks from a collection filtered by repo_id.
-func (c *Client) Query(ctx context.Context, collection string, vector []float32, repoID string, limit int) ([]string, error) {
-	return c.query(ctx, collection, vector, repoID, limit, nil)
+func (c *Client) Query(ctx context.Context, collection string, vector []float32, repoID, component string, limit int) ([]string, error) {
+	return c.query(ctx, collection, vector, repoID, component, limit, nil)
 }
 
-// QueryChanges filters only change history by its inclusive date window.
-func (c *Client) QueryChanges(ctx context.Context, collection string, vector []float32, repoID string, limit int, fromDate, toDate, dateField string) ([]string, error) {
+// QueryStandard filters only change history by its inclusive date window.
+func (c *Client) QueryStandard(ctx context.Context, collection string, vector []float32, repoID, component string, limit int, fromDate, toDate, dateField string) ([]string, error) {
 	from, err := time.Parse("2006-01-02", fromDate)
 	if err != nil {
 		return nil, fmt.Errorf("invalid from_date %q: %w", fromDate, err)
@@ -76,17 +76,23 @@ func (c *Client) QueryChanges(ctx context.Context, collection string, vector []f
 		dateField = "date"
 	}
 
-	return c.query(ctx, collection, vector, repoID, limit, qdrant.NewDatetimeRange(dateField, &qdrant.DatetimeRange{
+	return c.query(ctx, collection, vector, repoID, component, limit, qdrant.NewDatetimeRange(dateField, &qdrant.DatetimeRange{
 		Gte: timestamppb.New(from.UTC()),
 		Lte: timestamppb.New(to.UTC().Add(24*time.Hour - time.Nanosecond)),
 	}))
 }
 
-func (c *Client) query(ctx context.Context, collection string, vector []float32, repoID string, limit int, dateCondition *qdrant.Condition) ([]string, error) {
+func (c *Client) query(ctx context.Context, collection string, vector []float32, repoID, component string, limit int, dateCondition *qdrant.Condition) ([]string, error) {
 	if c.points == nil {
 		return nil, fmt.Errorf("qdrant client not initialised")
 	}
-	must := []*qdrant.Condition{qdrant.NewMatch("repo_id", repoID)}
+	var must []*qdrant.Condition
+	if repoID != "" {
+		must = []*qdrant.Condition{qdrant.NewMatch("repo_id", repoID)}
+	}
+	if component != "" {
+		must = append(must, qdrant.NewMatch("component", component))
+	}
 	if dateCondition != nil {
 		must = append(must, dateCondition)
 	}

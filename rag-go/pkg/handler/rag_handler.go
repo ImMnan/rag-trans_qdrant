@@ -135,6 +135,7 @@ func (dp *docHandler) handleRAG(c *fiber.Ctx) error {
 
 	dp.log.Info().
 		Str("repo_id", req.RepoID).
+		Str("component", req.Component).
 		Int("limit", req.Limit).
 		Msg("doc generate/update request received")
 
