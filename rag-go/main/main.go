@@ -25,7 +25,7 @@ func main() {
 
 	// --- Config from env ---
 	cfg := loadConfig()
-	orcaVersion := "0.6+"
+	orcaVersion := "0.7+"
 	log.Info().
 		Str("port", cfg.FiberPort).
 		Str("qdrant_host", cfg.QdrantHost).

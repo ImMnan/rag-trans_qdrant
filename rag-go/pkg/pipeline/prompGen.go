@@ -50,8 +50,7 @@ func joinChunks(chunks []string, fallback string) string {
 }
 
 func buildDocExtractPrompt(req Request, changeChunks, codeChunks []string) []Message {
-	changeCtx := joinChunks(changeChunks, "No change data found.")
-	codeCtx := joinChunks(codeChunks, "No source context found.")
+	evidenceCtx := joinChunks(mergeEvidenceChunks(changeChunks, codeChunks), "No change or code context found.")
 
 	systemPrompt := "You extract product and implementation facts from code evidence. " +
 		"Use only the provided change/code context. " +
@@ -63,18 +62,32 @@ func buildDocExtractPrompt(req Request, changeChunks, codeChunks []string) []Mes
 			"Rules:\n"+
 			"- Extract factual statements only from evidence.\n"+
 			"- If uncertain, list the point under unknowns.\n"+
-			"- confidence range must be 0.0 to 1.0.\n\n"+
+			"- confidence range must be 0.0 to 1.0.\n"+
+			"- Each evidence chunk below is prefixed with \"[source: change]\" or \"[source: code]\" on its own line; "+
+			"copy that exact label into the fact's source field.\n\n"+
 			"## Original Query\n%s\n\n"+
 			"## Original Answer Type\n%s\n\n"+
-			"## Diff / Change Hunks\n%s\n\n"+
-			"## Source / Code Reference\n%s",
-		req.QueryText, req.Type, changeCtx, codeCtx,
+			"## Evidence (Diff/Change Hunks and Source Code, combined)\n%s",
+		req.QueryText, req.Type, evidenceCtx,
 	)
 
 	return []Message{
 		{Role: "system", Content: systemPrompt},
 		{Role: "user", Content: userPrompt},
 	}
+}
+
+// mergeEvidenceChunks squashes change and code chunks into one evidence list,
+// tagging each chunk with its origin so the model can still cite source per fact.
+func mergeEvidenceChunks(changeChunks, codeChunks []string) []string {
+	merged := make([]string, 0, len(changeChunks)+len(codeChunks))
+	for _, c := range changeChunks {
+		merged = append(merged, "[source: change]\n"+c)
+	}
+	for _, c := range codeChunks {
+		merged = append(merged, "[source: code]\n"+c)
+	}
+	return merged
 }
 
 func buildDocAuditPrompt(req Request, extractedFactsJSON string, docChunks, genDocChunks []string) []Message {
