@@ -9,6 +9,7 @@ import (
 	"github.com/rs/zerolog"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 const (
@@ -54,18 +55,53 @@ func dialWithRetry(host string, log zerolog.Logger) (*grpc.ClientConn, error) {
 }
 
 // Query retrieves text chunks from a collection filtered by repo_id.
-func (c *Client) Query(ctx context.Context, collection string, vector []float32, repoID string, limit int) ([]string, error) {
+func (c *Client) Query(ctx context.Context, collection string, vector []float32, repoID, component string, limit int) ([]string, error) {
+	return c.query(ctx, collection, vector, repoID, component, limit, nil)
+}
+
+// QueryStandard filters only change history by its inclusive date window.
+func (c *Client) QueryStandard(ctx context.Context, collection string, vector []float32, repoID, component string, limit int, fromDate, toDate, dateField string) ([]string, error) {
+	from, err := time.Parse("2006-01-02", fromDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid from_date %q: %w", fromDate, err)
+	}
+	to, err := time.Parse("2006-01-02", toDate)
+	if err != nil {
+		return nil, fmt.Errorf("invalid to_date %q: %w", toDate, err)
+	}
+	if from.After(to) {
+		return nil, fmt.Errorf("from_date %q is after to_date %q", fromDate, toDate)
+	}
+	if dateField == "" {
+		dateField = "date"
+	}
+
+	return c.query(ctx, collection, vector, repoID, component, limit, qdrant.NewDatetimeRange(dateField, &qdrant.DatetimeRange{
+		Gte: timestamppb.New(from.UTC()),
+		Lte: timestamppb.New(to.UTC().Add(24*time.Hour - time.Nanosecond)),
+	}))
+}
+
+func (c *Client) query(ctx context.Context, collection string, vector []float32, repoID, component string, limit int, dateCondition *qdrant.Condition) ([]string, error) {
 	if c.points == nil {
 		return nil, fmt.Errorf("qdrant client not initialised")
+	}
+	var must []*qdrant.Condition
+	if repoID != "" {
+		must = []*qdrant.Condition{qdrant.NewMatch("repo_id", repoID)}
+	}
+	if component != "" {
+		must = append(must, qdrant.NewMatch("component", component))
+	}
+	if dateCondition != nil {
+		must = append(must, dateCondition)
 	}
 
 	resp, err := c.points.Query(ctx, &qdrant.QueryPoints{
 		CollectionName: collection,
 		Query:          qdrant.NewQuery(vector...),
 		Filter: &qdrant.Filter{
-			Must: []*qdrant.Condition{
-				qdrant.NewMatch("repo_id", repoID),
-			},
+			Must: must,
 		},
 		Limit:       qdrant.PtrOf(uint64(limit)),
 		WithPayload: qdrant.NewWithPayload(true),
@@ -110,6 +146,12 @@ func (c *Client) Query(ctx context.Context, collection string, vector []float32,
 		}
 
 		chunks = append(chunks, text)
+		c.log.Debug().
+			Str("collection", collection).
+			Str("point_id", pointID(hit.Id)).
+			Float32("score", hit.Score).
+			Int("order", len(chunks)-1).
+			Msg("qdrant chunk retrieved")
 	}
 
 	c.log.Debug().
@@ -118,4 +160,14 @@ func (c *Client) Query(ctx context.Context, collection string, vector []float32,
 		Msg("qdrant query complete")
 
 	return chunks, nil
+}
+
+func pointID(id *qdrant.PointId) string {
+	if id == nil {
+		return ""
+	}
+	if uuid := id.GetUuid(); uuid != "" {
+		return uuid
+	}
+	return fmt.Sprintf("%d", id.GetNum())
 }

@@ -19,6 +19,7 @@ type config struct {
 	EmbedHost        string // host or host:port
 	ModelName        string
 	ChangeCollection string
+	ChangeDateField  string
 	CodeCollection   string
 	DocCollection    string
 	GenDocCollection string
@@ -40,6 +41,7 @@ func loadConfig() config {
 		EmbedHost:        normalizeHostPort(embedHost, 80),
 		ModelName:        getEnv("QWEN_MODEL_NAME", "Qwen/Qwen2.5-7B-Instruct"),
 		ChangeCollection: getEnv("CHANGE_COLLECTION", "change_chunks"),
+		ChangeDateField:  getEnv("CHANGE_DATE_FIELD", "date"),
 		CodeCollection:   getEnv("CODE_COLLECTION", "code_chunks"),
 		DocCollection:    getEnv("DOC_COLLECTION", "doc_chunks"),
 		GenDocCollection: getEnv("GEN_DOC_COLLECTION", "gen_doc_chunks"),

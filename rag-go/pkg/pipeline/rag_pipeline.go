@@ -2,7 +2,11 @@ package pipeline
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/rs/zerolog"
@@ -10,7 +14,8 @@ import (
 
 // Interfaces — swap real clients for mocks in tests.
 type QdrantQuerier interface {
-	Query(ctx context.Context, collection string, vector []float32, repoID string, limit int) ([]string, error)
+	Query(ctx context.Context, collection string, vector []float32, repoID, component string, limit int) ([]string, error)
+	QueryStandard(ctx context.Context, collection string, vector []float32, repoID, component string, limit int, fromDate, toDate, dateField string) ([]string, error)
 }
 
 type VLLMCompleter interface {
@@ -36,6 +41,8 @@ type Request struct {
 	TokenLimit int
 	RepoName   string
 	Component  string
+	FromDate   string // YYYY-MM-DD, optional; filters chunks to this date or later.
+	ToDate     string // YYYY-MM-DD, optional; filters chunks to this date or earlier.
 }
 
 // Response is what the pipeline returns to the handler.
@@ -59,6 +66,7 @@ type RAGPipeline struct {
 	embedder         Embedder
 	changeCollection string
 	codeCollection   string
+	changeDateField  string
 	log              zerolog.Logger
 }
 
@@ -81,6 +89,7 @@ func New(
 	embedder Embedder,
 	changeCollection string,
 	codeCollection string,
+	changeDateField string,
 ) *RAGPipeline {
 	return &RAGPipeline{
 		qdrant:           qdrant,
@@ -88,6 +97,7 @@ func New(
 		embedder:         embedder,
 		changeCollection: changeCollection,
 		codeCollection:   codeCollection,
+		changeDateField:  changeDateField,
 		log:              zerolog.Nop(),
 	}
 }
@@ -138,12 +148,12 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		chunks []string
 		err    error
 	}
-	var qdrantQuery string
-	if req.RepoID != "" {
-		qdrantQuery = req.RepoID
-	} else {
-		qdrantQuery = req.Component
-	}
+	//	var qdrantQuery string
+	//	if req.RepoID != "" {
+	//		qdrantQuery = req.RepoID
+	//	} else {
+	//		qdrantQuery = req.Component
+	//	}
 
 	var wg sync.WaitGroup
 	changeCh := make(chan result, 1)
@@ -151,12 +161,18 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.changeCollection, vector, qdrantQuery, req.Limit)
+		var chunks []string
+		var err error
+		if strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
+			chunks, err = p.qdrant.QueryStandard(ctx, p.changeCollection, vector, req.RepoID, req.Component, req.Limit, req.FromDate, req.ToDate, p.changeDateField)
+		} else {
+			chunks, err = p.qdrant.Query(ctx, p.changeCollection, vector, req.RepoID, req.Component, req.Limit)
+		}
 		changeCh <- result{chunks, err}
 	}()
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, qdrantQuery, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, req.RepoID, req.Component, req.Limit)
 		codeCh <- result{chunks, err}
 	}()
 	wg.Wait()
@@ -176,6 +192,11 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	maxTokens := ResolveTokenBudget(req, messages)
 
 	// 4. Call LLM
+	p.log.Debug().
+		Str("messages_sha256", hashMessages(messages)).
+		Int("message_count", len(messages)).
+		Int("max_tokens", maxTokens).
+		Msg("assembled vllm messages")
 	answer, err := p.vllm.Complete(ctx, messages, maxTokens)
 	if err != nil {
 		return nil, fmt.Errorf("vllm complete: %w", err)
@@ -196,6 +217,15 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	}, nil
 }
 
+func hashMessages(messages []Message) string {
+	b, err := json.Marshal(messages)
+	if err != nil {
+		return "marshal-error"
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
 func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, error) {
 	// 1. Embed the query once
 	vector, err := p.embedder.Embed(ctx, req.QueryText)
@@ -209,13 +239,6 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		err    error
 	}
 
-	var qdrantQuery string
-	if req.RepoID != "" {
-		qdrantQuery = req.RepoID
-	} else {
-		qdrantQuery = req.Component
-	}
-
 	var wg sync.WaitGroup
 	changeCh := make(chan result, 1)
 	codeCh := make(chan result, 1)
@@ -224,23 +247,23 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	wg.Add(4)
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.changeCollection, vector, qdrantQuery, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.changeCollection, vector, req.RepoID, req.Component, req.Limit)
 		changeCh <- result{chunks, err}
 	}()
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, qdrantQuery, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, req.RepoID, req.Component, req.Limit)
 		codeCh <- result{chunks, err}
 	}()
 
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.docCollection, vector, qdrantQuery, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.docCollection, vector, req.RepoID, req.Component, req.Limit)
 		docCh <- result{chunks, err}
 	}()
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.genDocCollection, vector, qdrantQuery, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.genDocCollection, vector, req.RepoID, req.Component, req.Limit)
 		genDocCh <- result{chunks, err}
 	}()
 	wg.Wait()

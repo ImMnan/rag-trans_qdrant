@@ -214,16 +214,20 @@ func (p *LLMDocProcessor) Process(ctx context.Context, req Request, changeChunks
 		return "", err
 	}
 
-	audit, auditRaw, err := p.runAudit(ctx, req, extractRaw, docChunks, genDocChunks)
+	audit, _, err := p.runAudit(ctx, req, extractRaw, docChunks, genDocChunks)
 	if err != nil {
 		return "", err
 	}
 
 	coverageWarnings := enforceAuditFactCoverage(req, extract, &audit, docChunks, genDocChunks)
+	auditForGenerate, err := json.Marshal(audit)
+	if err != nil {
+		return "", fmt.Errorf("marshal enriched audit result: %w", err)
+	}
 
 	decision := p.engine.Decide(extract, audit)
 
-	gen, err := p.runGenerate(ctx, req, decision, extractRaw, auditRaw, profile, docChunks, genDocChunks)
+	gen, err := p.runGenerate(ctx, req, decision, extractRaw, string(auditForGenerate), profile, docChunks, genDocChunks)
 	if err != nil {
 		return "", err
 	}

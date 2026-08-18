@@ -37,7 +37,7 @@ spec:
         emptyDir: {}
       containers:
       - name: rag-go-ctr
-        image: immnan/rag-go:0.5.13
+        image: immnan/rag-go:0.7.0
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
@@ -59,6 +59,8 @@ spec:
           value: "code_chunks"
         - name: CHANGE_COLLECTION
           value: "change_chunks"
+        - name: CHANGE_DATE_FIELD
+          value: "date"
         - name: DOC_COLLECTION
           value: "doc_chunks"
         - name: GEN_DOC_COLLECTION
