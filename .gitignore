@@ -183,3 +183,5 @@ cython_debug/
 container/sa.yaml
 test-prompts.md
 test-explicit-dates.sh
+arch.md
+container/sa.yaml
