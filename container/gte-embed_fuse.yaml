@@ -52,37 +52,46 @@ spec:
         emptyDir: {}
       - name: model-cache
         persistentVolumeClaim:
-          claimName: embed-e5large-cache
+          claimName: embed-gte-cache
       initContainers:
-      - name: download-models-gcs
-        image: gcr.io/google.com/cloudsdktool/google-cloud-cli:slim
+      - name: download-models-hf
+        image: python:3.11-slim
+        env:
+        - name: HF_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: hf-token-secret
+              key: token
         command:
           - sh
           - -c
           - |
             set -euo pipefail
             mkdir -p /models/hub
-            
-            # 1. Sync the new gte-model cache directory from GCS into your local PVC
-            gcloud storage rsync -r gs://rag-model-weights-hawk/gte-model /models/hub
-            
-            # 2. Test for the new model directory instead of the old e5 one
+            pip install -q huggingface_hub
+            python - <<'PY'
+            from huggingface_hub import snapshot_download
+            snapshot_download(
+                'Alibaba-NLP/gte-Qwen2-1.5B-instruct',
+                cache_dir='/models/hub',
+                local_dir_use_symlinks=False,
+            )
+            PY
             test -d /models/hub/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct
-            
             ls -la /models/hub | head -n 40
         volumeMounts:
         - name: model-cache
           mountPath: /models
       containers:
-      - name: e5large-ctr
-        image: immnan/embed-e5large-py:0.2.3
+      - name: gte-embed-ctr
+        image: immnan/gte-embed-py:0.1.0
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8000
           name: embed-http
         env:
         - name: EMBED_MODEL
-          value: "intfloat/multilingual-e5-large"
+          value: "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
         - name: HF_HOME
           value: "/models"
         - name: HF_HUB_CACHE
@@ -91,6 +100,10 @@ spec:
           value: "1"
         - name: TRANSFORMERS_OFFLINE
           value: "1"
+        - name: EMBED_QUERY_TEMPLATE
+          value: "{text}"
+        - name: EMBED_DOCUMENT_TEMPLATE
+          value: "{text}"
         volumeMounts:
         - name: tmp
           mountPath: /tmp
@@ -105,14 +118,12 @@ spec:
           limits:
             cpu: "2"
             memory: 8Gi
-      # Bind the pod to the KSA that is linked to a GSA with storage.objectViewer
-      # (or storage.objectAdmin if you need writes) on the bucket.
 
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
-  name: embed-e5large-cache
+  name: embed-gte-cache
   namespace: hawk
 spec:
   storageClassName: premium-rwo

@@ -56,15 +56,15 @@ spec:
         - name: TRANSFORMERS_OFFLINE
           value: "1"
         - name: CODE_COLLECTION
-          value: "code_chunks"
+          value: "e5-code_chunks"
         - name: CHANGE_COLLECTION
-          value: "change_chunks"
+          value: "e5-change_chunks"
         - name: CHANGE_DATE_FIELD
           value: "date"
         - name: DOC_COLLECTION
-          value: "doc_chunks"
+          value: "e5-doc_chunks"
         - name: GEN_DOC_COLLECTION
-          value: "gen_doc_chunks"
+          value: "e5-gen_doc_chunks"
         - name: FIBER_READ_TIMEOUT
           value: "30"
         - name: FIBER_WRITE_TIMEOUT
