@@ -24,7 +24,10 @@ func main() {
 	log.Logger = zerolog.New(os.Stdout).With().Timestamp().Str("service", "orca").Logger()
 
 	// --- Config from env ---
-	cfg := loadConfig()
+	cfg, err := loadConfig()
+	if err != nil {
+		log.Fatal().Err(err).Msg("invalid configuration")
+	}
 	orcaVersion := "0.7+"
 	log.Info().
 		Str("port", cfg.FiberPort).

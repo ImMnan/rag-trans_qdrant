@@ -25,9 +25,11 @@ type config struct {
 	GenDocCollection string
 }
 
-func loadConfig() config {
-	embedServiceHostFallback := getEnv("EMBED_SERVICE_HOST", "embed-e5-service")
-	embedClientType, embedHost := parseEmbedServiceType(getEnv("EMBED_SERVICE_TYPE", "e5:embed-e5-service"), embedServiceHostFallback)
+func loadConfig() (config, error) {
+	embedClientType, embedHost, err := parseEmbedServiceType(getEnv("EMBED_SERVICE_TYPE", ""))
+	if err != nil {
+		return config{}, err
+	}
 
 	return config{
 		FiberPort:        getEnv("FIBER_PORT", "8080"),
@@ -45,30 +47,28 @@ func loadConfig() config {
 		CodeCollection:   getEnv("CODE_COLLECTION", "code_chunks"),
 		DocCollection:    getEnv("DOC_COLLECTION", "doc_chunks"),
 		GenDocCollection: getEnv("GEN_DOC_COLLECTION", "gen_doc_chunks"),
-	}
+	}, nil
 }
 
-func parseEmbedServiceType(raw string, fallbackHost string) (string, string) {
+// parseEmbedServiceType requires EMBED_SERVICE_TYPE in "<type>:<host>" format; no default client type.
+func parseEmbedServiceType(raw string) (string, string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "e5", fallbackHost
+		return "", "", fmt.Errorf("EMBED_SERVICE_TYPE must be set (format: <type>:<host>)")
 	}
 
 	parts := strings.SplitN(raw, ":", 2)
-	if len(parts) == 1 {
-		return strings.TrimSpace(parts[0]), fallbackHost
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("EMBED_SERVICE_TYPE %q must be in format <type>:<host>", raw)
 	}
 
 	clientType := strings.TrimSpace(parts[0])
 	host := strings.TrimSpace(parts[1])
-	if host == "" {
-		host = fallbackHost
-	}
-	if clientType == "" {
-		clientType = "e5"
+	if clientType == "" || host == "" {
+		return "", "", fmt.Errorf("EMBED_SERVICE_TYPE %q must have non-empty type and host", raw)
 	}
 
-	return clientType, host
+	return clientType, host, nil
 }
 
 // normalizeHostPort ensures host:port format, using defaultPort if no port specified.
