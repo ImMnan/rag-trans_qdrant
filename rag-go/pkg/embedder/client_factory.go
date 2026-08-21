@@ -17,10 +17,10 @@ func NewClientFromType(clientType string, baseURL string, log zerolog.Logger) Em
 	switch strings.ToLower(strings.TrimSpace(clientType)) {
 	case "gte-qwen":
 		return NewGTEQwenClient(baseURL, log)
-	case "e5", "":
+	case "e5":
 		return NewClient(baseURL, log)
 	default:
-		log.Warn().Str("embed_client_type", clientType).Msg("unknown embed client type, falling back to e5")
-		return NewClient(baseURL, log)
+		log.Fatal().Str("embed_client_type", clientType).Msg("unknown embed client type")
+		return nil
 	}
 }
