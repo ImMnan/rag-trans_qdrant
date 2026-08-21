@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -94,7 +95,9 @@ func (c *HTTPClient) Complete(ctx context.Context, messages []pipeline.Message, 
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("vllm returned %d", resp.StatusCode)
+		errBody, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
+		c.log.Error().Int("status", resp.StatusCode).Str("body", string(errBody)).Int("max_tokens", maxTokens).Msg("vllm returned error")
+		return "", fmt.Errorf("vllm returned %d: %s", resp.StatusCode, string(errBody))
 	}
 
 	var result chatResponse
