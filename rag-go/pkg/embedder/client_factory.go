@@ -3,6 +3,7 @@ package embedder
 import (
 	"context"
 	"strings"
+	"time"
 
 	"github.com/rs/zerolog"
 )
@@ -13,12 +14,12 @@ type EmbeddingClient interface {
 }
 
 // NewClientFromType picks the embedding client implementation by type.
-func NewClientFromType(clientType string, baseURL string, log zerolog.Logger) EmbeddingClient {
+func NewClientFromType(clientType string, baseURL string, timeout time.Duration, log zerolog.Logger) EmbeddingClient {
 	switch strings.ToLower(strings.TrimSpace(clientType)) {
 	case "gte-qwen":
-		return NewGTEQwenClient(baseURL, log)
+		return NewGTEQwenClient(baseURL, timeout, log)
 	case "e5":
-		return NewClient(baseURL, log)
+		return NewClient(baseURL, timeout, log)
 	default:
 		log.Fatal().Str("embed_client_type", clientType).Msg("unknown embed client type")
 		return nil

@@ -66,13 +66,15 @@ spec:
         - name: GEN_DOC_COLLECTION
           value: "e5-gen_doc_chunks"
         - name: FIBER_READ_TIMEOUT
-          value: "30"
+          value: "30s"
         - name: FIBER_WRITE_TIMEOUT
-          value: "120"
+          value: "120s"
         - name: FIBER_IDLE_TIMEOUT
-          value: "60"
+          value: "60s"
         - name: VLLM_TIMEOUT
-          value: "180" 
+          value: "180s"
+        - name: EMBED_TIMEOUT
+          value: "60s"
         volumeMounts:
         - name: tmp
           mountPath: /tmp         

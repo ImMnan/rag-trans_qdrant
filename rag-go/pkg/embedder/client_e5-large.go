@@ -18,11 +18,11 @@ type Client struct {
 	log        zerolog.Logger
 }
 
-func NewClient(baseURL string, log zerolog.Logger) *Client {
+func NewClient(baseURL string, timeout time.Duration, log zerolog.Logger) *Client {
 	return &Client{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: timeout,
 			Transport: &http.Transport{
 				MaxIdleConns:        50,
 				MaxIdleConnsPerHost: 50,
