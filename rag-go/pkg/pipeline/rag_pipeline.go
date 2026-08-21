@@ -188,7 +188,17 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	}
 
 	// 3. Build prompt
-	messages := buildPrompt(req, changeResult.chunks, codeResult.chunks)
+	changeChunks := TruncateChunksToCharBudget(changeResult.chunks, maxContextCharsPerSide)
+	codeChunks := TruncateChunksToCharBudget(codeResult.chunks, maxContextCharsPerSide)
+	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) {
+		p.log.Warn().
+			Int("change_chunks_kept", len(changeChunks)).
+			Int("change_chunks_retrieved", len(changeResult.chunks)).
+			Int("code_chunks_kept", len(codeChunks)).
+			Int("code_chunks_retrieved", len(codeResult.chunks)).
+			Msg("truncated retrieved chunks to stay within context budget")
+	}
+	messages := buildPrompt(req, changeChunks, codeChunks)
 	maxTokens := ResolveTokenBudget(req, messages)
 
 	// 4. Call LLM

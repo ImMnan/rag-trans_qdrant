@@ -9,7 +9,26 @@ const (
 
 	minRequestTokenLimit = 64
 	maxRequestTokenLimit = 12288
+
+	// maxContextCharsPerSide caps retrieved chunk content (change or code side) before prompting,
+	// as a hard backstop since the ~4-chars/token estimate below can undercount dense code text.
+	maxContextCharsPerSide = 30000
 )
+
+// TruncateChunksToCharBudget keeps chunks, in order, until adding the next one would
+// exceed maxChars; it drops the remainder rather than cutting a chunk mid-content.
+func TruncateChunksToCharBudget(chunks []string, maxChars int) []string {
+	total := 0
+	out := make([]string, 0, len(chunks))
+	for _, c := range chunks {
+		total += len(c) + 4 // + separator overhead
+		if total > maxChars {
+			break
+		}
+		out = append(out, c)
+	}
+	return out
+}
 
 // ResolveTokenBudget returns the output-token budget for a single LLM call.
 // If request token_limit is set, it is treated as a hard override (clamped).
