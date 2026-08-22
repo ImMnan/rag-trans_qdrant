@@ -23,14 +23,27 @@ const standardFormatContract = "Your answer MUST open with these three sections,
 	"- If no changes are provided, the What Changed body must be exactly: " +
 	"'No changes found in the requested timeframe based on provided context.'\n" +
 	"- If no security or performance items apply, the Security & Performance body must be exactly: 'None identified'.\n" +
-	"- After those three sections, add whatever additional bolded sections the Request asks for " +
-	"(for example **Marketing Highlights** or **Migration Notes**), written in the style and tone the Request specifies. " +
-	"Answer the Request fully there; still use only the provided context.\n"
+	"- The three sections above are the entire answer by default. Add a further section ONLY when the Request explicitly asks " +
+	"for something those three cannot carry; name that section after what the Request asked for and write it in the style and tone it specifies. " +
+	"If the Request asks nothing beyond a summary of changes, stop after Security & Performance and add nothing else.\n" +
+	"- Never invent a section from the examples or wording of these instructions.\n"
 
 const standardFormatReminder = "## Output Format\n" +
 	"Begin with the three headings **What Changed**, **User Impact**, and **Security & Performance**, " +
 	"in that order, spelled exactly like that — even if the Request implies a different structure. " +
-	"Then add any further sections needed to answer the Request."
+	"Add a further section only if the Request explicitly asked for one; otherwise end after Security & Performance."
+
+// evidenceGroundingRules tell the model how to read the [evidence: ...] labels
+// that annotateCodeChunks attaches to each source chunk.
+const evidenceGroundingRules = "Evidence grounding:\n" +
+	"- Each Source / Doc Reference chunk starts with \"[evidence: implementation|mixed|comment-only]\" and \"[source: <file path>]\".\n" +
+	"- Chunks are whole functions, so a mixed chunk is a doc comment plus its implementation. " +
+	"Ground claims in the implementation body, not the doc comment. If the two disagree, the body wins and you must say so.\n" +
+	"- comment-only chunks are author comments, docstrings, config, or prose, not proof that the code behaves that way. " +
+	"Any claim resting only on such a chunk must be worded as 'documented as' or 'per comments in <file>', never as confirmed behaviour.\n" +
+	"- A function being defined does not prove it is reachable or enabled. " +
+	"Only call a capability supported if the context shows it invoked, registered, or configured; otherwise say it is defined but its use is not visible in the provided context.\n" +
+	"- Cite the file path from the [source: ...] label when stating a technical fact.\n"
 
 // buildPrompt assembles the LLM messages from retrieved chunks.
 func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
@@ -42,7 +55,7 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 			"Use only the provided context. The Diff / Change Hunks context has already been filtered to the requested reporting window. " +
 			"Treat the Request as topic and do not apply additional date filtering. " +
 			"Always answer the Request, but do so within the required section layout below.\n\n" +
-			standardFormatContract
+			standardFormatContract + "\n" + evidenceGroundingRules
 
 		userPrompt := fmt.Sprintf("## Reporting Window\n%s to %s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s\n\n%s",
 			req.FromDate, req.ToDate, changeCtx, codeCtx, req.QueryText, standardFormatReminder)
@@ -58,8 +71,9 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 			"Be concise and factual. If asked whether a feature is supported, answer with 'Yes' or 'No' "+
 			"and include when it first appears in the provided context if available; "+
 			"otherwise say 'Unknown based on provided context'.\n\n"+
+			"%s\n"+
 			"## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Question\n%s",
-		changeCtx, codeCtx, req.QueryText,
+		evidenceGroundingRules, changeCtx, codeCtx, req.QueryText,
 	)
 
 	return []Message{{Role: "user", Content: directPrompt}}
@@ -94,7 +108,8 @@ func buildStandardFormatRepairPrompt(answer string) []Message {
 
 	userPrompt := "Reformat the following answer into the required layout. " +
 		"Map existing content into the matching section; if one of the three required sections has no content, apply the fallback text from the rules. " +
-		"Keep any query-specific material that does not belong to the three required sections as additional bolded sections after them.\n\n" +
+		"Keep any material that does not belong to the three required sections as additional bolded sections after them, " +
+		"but do not create sections that have no content in the answer being reformatted.\n\n" +
 		"## Answer To Reformat\n" + answer
 
 	return []Message{

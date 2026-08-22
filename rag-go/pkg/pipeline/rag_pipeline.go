@@ -198,6 +198,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 			Int("code_chunks_retrieved", len(codeResult.chunks)).
 			Msg("truncated retrieved chunks to stay within context budget")
 	}
+	codeChunks, evidenceCounts := annotateCodeChunks(codeChunks)
 	messages := buildPrompt(req, changeChunks, codeChunks)
 	maxTokens := ResolveTokenBudget(req, messages)
 
@@ -206,6 +207,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		Str("messages_sha256", hashMessages(messages)).
 		Int("message_count", len(messages)).
 		Int("max_tokens", maxTokens).
+		Interface("code_evidence", evidenceCounts).
 		Msg("assembled vllm messages")
 	answer, err := p.vllm.Complete(ctx, messages, maxTokens)
 	if err != nil {
@@ -227,13 +229,18 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		}
 	}
 
+	sources := map[string]int{
+		"change_chunks_retrieved": len(changeResult.chunks),
+		"code_chunks_retrieved":   len(codeResult.chunks),
+	}
+	for kind, n := range evidenceCounts {
+		sources["code_chunks_"+strings.ReplaceAll(kind, "-", "_")] = n
+	}
+
 	return &Response{
-		Answer: answer,
-		Type:   req.Type,
-		Sources: map[string]int{
-			"change_chunks_retrieved": len(changeResult.chunks),
-			"code_chunks_retrieved":   len(codeResult.chunks),
-		},
+		Answer:  answer,
+		Type:    req.Type,
+		Sources: sources,
 		Meta: ResponseMeta{
 			RepoID:    req.RepoID,
 			Component: req.Component,
