@@ -148,12 +148,6 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		chunks []string
 		err    error
 	}
-	//	var qdrantQuery string
-	//	if req.RepoID != "" {
-	//		qdrantQuery = req.RepoID
-	//	} else {
-	//		qdrantQuery = req.Component
-	//	}
 
 	var wg sync.WaitGroup
 	changeCh := make(chan result, 1)
@@ -318,8 +312,27 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		p.log.Warn().Err(genDocResult.err).Str("collection", p.genDocCollection).Msg("qdrant query failed")
 	}
 
-	// 3. Run strong-confidence doc workflow (extract -> audit -> decide -> generate -> validate)
-	answer, err := p.docProcessor.Process(ctx, req, changeResult.chunks, codeResult.chunks, docResult.chunks, genDocResult.chunks)
+	// 3. Truncate each retrieved set to stay within the model's context budget.
+	changeChunks := TruncateChunksToCharBudget(changeResult.chunks, maxContextCharsPerSide)
+	codeChunks := TruncateChunksToCharBudget(codeResult.chunks, maxContextCharsPerSide)
+	docChunks := TruncateChunksToCharBudget(docResult.chunks, maxContextCharsPerSide)
+	genDocChunks := TruncateChunksToCharBudget(genDocResult.chunks, maxContextCharsPerSide)
+	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) ||
+		len(docChunks) < len(docResult.chunks) || len(genDocChunks) < len(genDocResult.chunks) {
+		p.log.Warn().
+			Int("change_chunks_kept", len(changeChunks)).
+			Int("change_chunks_retrieved", len(changeResult.chunks)).
+			Int("code_chunks_kept", len(codeChunks)).
+			Int("code_chunks_retrieved", len(codeResult.chunks)).
+			Int("doc_chunks_kept", len(docChunks)).
+			Int("doc_chunks_retrieved", len(docResult.chunks)).
+			Int("gen_doc_chunks_kept", len(genDocChunks)).
+			Int("gen_doc_chunks_retrieved", len(genDocResult.chunks)).
+			Msg("truncated retrieved chunks to stay within context budget")
+	}
+
+	// 4. Run strong-confidence doc workflow (extract -> audit -> decide -> generate -> validate)
+	answer, err := p.docProcessor.Process(ctx, req, changeChunks, codeChunks, docChunks, genDocChunks)
 	if err != nil {
 		return nil, fmt.Errorf("doc workflow: %w", err)
 	}
