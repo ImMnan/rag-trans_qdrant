@@ -5,6 +5,33 @@ import (
 	"strings"
 )
 
+// standardSectionHeadings are the exact heading lines a "standard" answer must contain, in order.
+var standardSectionHeadings = []string{
+	"**What Changed**",
+	"**User Impact**",
+	"**Security & Performance**",
+}
+
+const standardFormatContract = "Your answer MUST open with these three sections, reproduced verbatim including the ** markers, " +
+	"with your content replacing the angle-bracket placeholders:\n\n" +
+	"**What Changed**\n<concise description of the provided commits/diffs>\n\n" +
+	"**User Impact**\n<what end-users will notice or need to act on>\n\n" +
+	"**Security & Performance**\n<security fixes or performance optimizations>\n\n" +
+	"Rules:\n" +
+	"- Emit all three headings first, in this order, spelled exactly as shown. Never rename, translate, or reformat them.\n" +
+	"- Do not add a preamble or a title before **What Changed**.\n" +
+	"- If no changes are provided, the What Changed body must be exactly: " +
+	"'No changes found in the requested timeframe based on provided context.'\n" +
+	"- If no security or performance items apply, the Security & Performance body must be exactly: 'None identified'.\n" +
+	"- After those three sections, add whatever additional bolded sections the Request asks for " +
+	"(for example **Marketing Highlights** or **Migration Notes**), written in the style and tone the Request specifies. " +
+	"Answer the Request fully there; still use only the provided context.\n"
+
+const standardFormatReminder = "## Output Format\n" +
+	"Begin with the three headings **What Changed**, **User Impact**, and **Security & Performance**, " +
+	"in that order, spelled exactly like that — even if the Request implies a different structure. " +
+	"Then add any further sections needed to answer the Request."
+
 // buildPrompt assembles the LLM messages from retrieved chunks.
 func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 	changeCtx := joinChunks(changeChunks, "No change data found.")
@@ -13,16 +40,12 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 	if strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
 		systemPrompt := "You are a senior engineer producing product release summaries. " +
 			"Use only the provided context. The Diff / Change Hunks context has already been filtered to the requested reporting window. " +
-			"Treat the Request as topic and do not apply additional date filtering.\n\n" +
-			"Structure your answer with these sections:\n" +
-			"0. **What Changed** - describe the provided commits/diffs concisely. " +
-			"If no changes are provided, write exactly: 'No changes found in the requested timeframe based on provided context.'\n" +
-			"1. **User Impact** - explain what end-users will notice or need to act on.\n" +
-			"2. **Security & Performance** - flag any security fixes or performance optimizations; " +
-			"write 'None identified' if absent.\n"
+			"Treat the Request as topic and do not apply additional date filtering. " +
+			"Always answer the Request, but do so within the required section layout below.\n\n" +
+			standardFormatContract
 
-		userPrompt := fmt.Sprintf("## Reporting Window\n%s to %s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s",
-			req.FromDate, req.ToDate, changeCtx, codeCtx, req.QueryText)
+		userPrompt := fmt.Sprintf("## Reporting Window\n%s to %s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s\n\n%s",
+			req.FromDate, req.ToDate, changeCtx, codeCtx, req.QueryText, standardFormatReminder)
 
 		return []Message{
 			{Role: "system", Content: systemPrompt},
@@ -47,6 +70,37 @@ func joinChunks(chunks []string, fallback string) string {
 		return fallback
 	}
 	return strings.Join(chunks, "\n---\n")
+}
+
+// hasStandardSections reports whether the answer carries all required headings in order.
+func hasStandardSections(answer string) bool {
+	cursor := 0
+	for _, heading := range standardSectionHeadings {
+		idx := strings.Index(answer[cursor:], heading)
+		if idx < 0 {
+			return false
+		}
+		cursor += idx + len(heading)
+	}
+	return true
+}
+
+// buildStandardFormatRepairPrompt reformats an off-template answer without re-running retrieval.
+func buildStandardFormatRepairPrompt(answer string) []Message {
+	systemPrompt := "You reformat an existing answer into a fixed template. " +
+		"Preserve all factual content and wording as closely as possible. " +
+		"Never add facts, and never drop facts. Only restructure.\n\n" +
+		standardFormatContract
+
+	userPrompt := "Reformat the following answer into the required layout. " +
+		"Map existing content into the matching section; if one of the three required sections has no content, apply the fallback text from the rules. " +
+		"Keep any query-specific material that does not belong to the three required sections as additional bolded sections after them.\n\n" +
+		"## Answer To Reformat\n" + answer
+
+	return []Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
+	}
 }
 
 func buildDocExtractPrompt(req Request, changeChunks, codeChunks []string) []Message {

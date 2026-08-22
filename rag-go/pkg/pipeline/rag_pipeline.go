@@ -212,6 +212,21 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		return nil, fmt.Errorf("vllm complete: %w", err)
 	}
 
+	// 5. Enforce the section template for standard answers, with one reformat retry.
+	if strings.EqualFold(strings.TrimSpace(req.Type), "standard") && !hasStandardSections(answer) {
+		p.log.Warn().Msg("standard answer missing required sections, attempting reformat")
+		repairPrompt := buildStandardFormatRepairPrompt(answer)
+		repaired, repairErr := p.vllm.Complete(ctx, repairPrompt, ResolveTokenBudget(req, repairPrompt))
+		switch {
+		case repairErr != nil:
+			p.log.Warn().Err(repairErr).Msg("standard answer reformat failed, returning original")
+		case hasStandardSections(repaired):
+			answer = repaired
+		default:
+			p.log.Warn().Msg("standard answer reformat still missing sections, returning original")
+		}
+	}
+
 	return &Response{
 		Answer: answer,
 		Type:   req.Type,
