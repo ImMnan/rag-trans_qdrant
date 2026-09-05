@@ -1,0 +1,28 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-profile-cm
+  namespace: hawk
+  labels:
+    app.kubernetes.io/component: rag-context
+    rag.repo-id: github.com-Blazemeter-bzm-crane
+data:
+  bzm-crane.md: |
+    ---
+    repo_id: github.com/Blazemeter/bzm-crane
+    document_type: application_profile
+    audience: platform engineers and application operators
+    ---
+
+    # BlazeMeter Crane Application Profile
+
+    ## Purpose
+    BlazeMeter Crane is an orchestrator agent running in Kubernetes & Docker that deploys load generator engines that runs tests.
+
+    ## Supported Questions
+    Answer questions about deploying, configuring, running, and troubleshooting BlazeMeter Crane in Kubernetes and how it orchestrates other resources.
+
+    ## Direct Answer Policy
+    Give steps for using the BlazeMeter Crane deployment. Prefer Kubernetes manifests with environment variables, RBAC, networking, resources.
+    Do not recommend editing BlazeMeter Crane source code unless the user explicitly asks for implementation or source-code changes.
+

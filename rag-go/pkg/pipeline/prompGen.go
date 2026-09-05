@@ -66,22 +66,25 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 		}
 	}
 
-	directAnswerGuidance := "For how-to questions, provide a numbered sequence of actionable steps. Include the exact commands, deployment manifests, flags, environment variables, and configuration values supported by the evidence. Explain where each value belongs and how to verify the result. Do not invent missing values; call out anything unknown."
+	directAnswerGuidance := "For how-to questions, act as an application operator: provide a numbered sequence of steps for using the existing application. Include the exact commands, deployment manifests, flags, environment variables, and configuration values supported by the evidence. Explain where each value belongs and how to verify the result. Do not recommend edits to the application source code or explain how to implement the feature unless the Question explicitly asks for a code change or implementation details. Do not invent missing values; call out anything unknown."
 	if !isInstructionalRequest(req.QueryText) {
-		directAnswerGuidance = "Answer the question directly and include relevant commands or configuration only when needed. Do not invent missing details; say what is unknown based on the provided context."
+		directAnswerGuidance = "Answer the question directly from the perspective of using the existing application. Include relevant commands or configuration only when needed. Do not recommend source code changes or implementation details unless the Question explicitly asks for them. Do not invent missing details; say what is unknown based on the provided context."
+	}
+	appProfileCtx := "No application profile is configured for this repository."
+	if req.AppProfile != "" {
+		appProfileCtx = req.AppProfile
 	}
 
 	directPrompt := fmt.Sprintf(
 		"Answer the user question using the combined code snapshot and change context below. "+
 			"Be concise and factual. If asked whether a feature is supported, answer with 'Yes' or 'No' "+
-			"and include when it first appears in the provided context if available; "+
-			"otherwise say 'Unknown based on provided context'. Reconcile the current code with the changes: "+
+			"Reconcile the current code with the changes: "+
 			"use the implementation evidence in the code snapshot and change hunks together to determine the most accurate answer. "+
 			"If they conflict, treat the current implementation as authoritative for present behavior and use changes to explain its history.\n\n"+
 			"%s\n\n"+
 			"%s\n"+
-			"## Diff / Change Hunks\n%s\n\n## Code Snapshot / Source Reference\n%s\n\n## Question\n%s",
-		directAnswerGuidance, evidenceGroundingRules, changeCtx, codeCtx, req.QueryText,
+			"## Application Profile\n%s\n\n## Diff / Change Hunks\n%s\n\n## Code Snapshot / Source Reference\n%s\n\n## Question\n%s",
+		directAnswerGuidance, evidenceGroundingRules, appProfileCtx, changeCtx, codeCtx, req.QueryText,
 	)
 
 	return []Message{{Role: "user", Content: directPrompt}}

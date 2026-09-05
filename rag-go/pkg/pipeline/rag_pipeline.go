@@ -36,6 +36,7 @@ type Message struct {
 type Request struct {
 	QueryText  string
 	RepoID     string
+	AppProfile string
 	Type       string
 	Limit      int
 	TokenLimit int
@@ -67,6 +68,8 @@ type RAGPipeline struct {
 	changeCollection string
 	codeCollection   string
 	changeDateField  string
+	appProfileDir    string
+	appProfileFiles  map[string]string
 	log              zerolog.Logger
 }
 
@@ -90,6 +93,8 @@ func New(
 	changeCollection string,
 	codeCollection string,
 	changeDateField string,
+	appProfileDir string,
+	appProfileFiles map[string]string,
 ) *RAGPipeline {
 	return &RAGPipeline{
 		qdrant:           qdrant,
@@ -98,6 +103,8 @@ func New(
 		changeCollection: changeCollection,
 		codeCollection:   codeCollection,
 		changeDateField:  changeDateField,
+		appProfileDir:    appProfileDir,
+		appProfileFiles:  appProfileFiles,
 		log:              zerolog.Nop(),
 	}
 }
@@ -137,6 +144,15 @@ type Execution interface {
 
 // Execute runs the full RAG pipeline for a single request.
 func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, error) {
+	if !strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
+		profile, err := loadApplicationProfile(p.appProfileDir, p.appProfileFiles[req.RepoID])
+		if err != nil {
+			p.log.Warn().Err(err).Str("repo_id", req.RepoID).Msg("application profile lookup failed")
+		} else {
+			req.AppProfile = profile
+		}
+	}
+
 	// 1. Embed the query once
 	vector, err := p.embedder.Embed(ctx, req.QueryText)
 	if err != nil {
