@@ -143,11 +143,11 @@ func (e *DefaultDocDecisionEngine) Decide(extract DocExtractResult, audit DocAud
 	}
 
 	if len(extract.Unknowns) > 0 {
-		return DocDecision{Status: StatusUpdateRequired, Reason: "Relevant documentation exists, but unresolved unknowns prevent a no-change decision."}
+		return DocDecision{Status: StatusNoChangesRequired, Reason: "Relevant documentation exists and code evidence does not clearly require a change; unresolved unknowns fall back to the existing documentation."}
 	}
 
 	if len(extract.Facts) == 0 {
-		return DocDecision{Status: StatusUpdateRequired, Reason: "Relevant documentation exists, but there is not enough extracted evidence to confirm no changes are required."}
+		return DocDecision{Status: StatusNoChangesRequired, Reason: "Relevant documentation exists and no query-scoped code evidence clearly requires a change."}
 	}
 
 	return DocDecision{Status: StatusNoChangesRequired, Reason: "Relevant documentation is aligned with current code evidence."}

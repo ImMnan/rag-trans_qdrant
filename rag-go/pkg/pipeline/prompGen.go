@@ -45,6 +45,13 @@ const evidenceGroundingRules = "Evidence grounding:\n" +
 	"Only call a capability supported if the context shows it invoked, registered, or configured; otherwise say it is defined but its use is not visible in the provided context.\n" +
 	"- Cite the file path from the [source: ...] label when stating a technical fact.\n"
 
+const docAuthorityRules = "Documentation authority rules:\n" +
+	"- Code/change evidence is the paramount truth only for facts that directly answer the Original Query.\n" +
+	"- Do not use unrelated implementation details to mark existing documentation stale, incomplete, or conflicting.\n" +
+	"- When code evidence is incomplete, ambiguous, only comment-derived, or outside the query scope, preserve the existing documentation and put the uncertainty in warnings/unknowns.\n" +
+	"- Existing documentation remains the fallback source for documented use-case context unless specific code/change evidence clearly disproves that documented point.\n" +
+	"- A generated document or patch must stay within the documented use case and the Original Query; do not broaden the task because adjacent code exists.\n"
+
 // buildPrompt assembles the LLM messages from retrieved chunks.
 func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 	changeCtx := joinChunks(changeChunks, "No change data found.")
@@ -142,8 +149,10 @@ func buildDocExtractPrompt(req Request, changeChunks, codeChunks []string) []Mes
 		"Return JSON with this shape only:\n"+
 			"{\"topic\":string,\"facts\":[{\"fact\":string,\"source\":\"change|code\",\"confidence\":number}],\"unknowns\":[string]}\n\n"+
 			"Rules:\n"+
-			"- Extract factual statements only from evidence.\n"+
+			"- Extract factual statements only from evidence and only when they directly answer the Original Query.\n"+
+			"- Ignore adjacent implementation details that are not required to answer the Original Query.\n"+
 			"- If uncertain, list the point under unknowns.\n"+
+			"- If a point is only implied by comments or surrounding code and not 100%% clear from implementation/change evidence, list it under unknowns instead of facts.\n"+
 			"- confidence range must be 0.0 to 1.0.\n"+
 			"- Each evidence chunk below is prefixed with \"[source: change]\" or \"[source: code]\" on its own line; "+
 			"copy that exact label into the fact's source field.\n\n"+
@@ -185,16 +194,20 @@ func buildDocAuditPrompt(req Request, extractedFactsJSON string, docChunks, genD
 			"{\"matched_docs\":[{\"doc_ref\":string,\"title\":string,\"why_matched\":string,\"match_confidence\":number}],\"missing_facts\":[string],\"conflicting_facts\":[string],\"stale_facts\":[string],\"summary\":string}\n\n"+
 			"Rules:\n"+
 			"- A matched doc must directly relate to the query topic.\n"+
-			"- Treat code-derived facts as ground truth.\n"+
+			"- Treat code-derived facts as ground truth only for the specific Original Query.\n"+
+			"- Do not mark documentation missing, conflicting, or stale for facts outside the Original Query, even if those facts appear in code.\n"+
+			"- If extracted facts or source evidence do not 100%% clearly disprove the documented use case, keep the documentation valid and mention uncertainty in summary.\n"+
+			"- Prefer a higher match_confidence for an existing document that covers the same use case, even when the code evidence has gaps.\n"+
 			"- match_confidence range must be 0.0 to 1.0.\n"+
 			"- Each documentation chunk is prefixed with \"[source: <filename>]\" on its own line. "+
 			"When a chunk matches the query topic, copy that exact filename (e.g. \"docs/gatling.md\") into the doc_ref field. "+
 			"Never leave doc_ref empty when a [source: ...] label is present in the matched chunk.\n\n"+
+			"%s\n"+
 			"## Original Query\n%s\n\n"+
 			"## Extracted Facts JSON\n%s\n\n"+
 			"## Existing Documentation Chunks\n%s\n\n"+
 			"## Existing Generated Documentation Chunks\n%s",
-		req.QueryText, extractedFactsJSON, docCtx, genDocCtx,
+		docAuthorityRules, req.QueryText, extractedFactsJSON, docCtx, genDocCtx,
 	)
 
 	return []Message{
@@ -235,7 +248,10 @@ func buildDocGeneratePrompt(
 			"1. Steps tell the user exactly what to run or edit.\n"+
 			"2. %s\n"+
 			"3. Inside code blocks, add a short comment only when a value is non-obvious; do not fabricate values not supported by the evidence.\n"+
-			"4. If evidence is insufficient for a full runnable example, list what is unknown in warnings instead of inventing details.\n\n"+
+			"4. If evidence is insufficient for a full runnable example, list what is unknown in warnings instead of inventing details.\n"+
+			"5. Preserve existing documentation for any use-case detail outside the Original Query or not 100%% clearly changed by code/change evidence.\n"+
+			"6. Do not replace valid documented use-case context with a generated interpretation unless Audit JSON shows a specific query-scoped conflict, stale fact, or missing fact.\n\n"+
+			"%s\n"+
 			"Update patch rules (apply when status is update_required):\n"+
 			"- changes_markdown is the actual ready-to-paste Markdown content for the change, not a description of the change.\n"+
 			"- Never write a summary such as 'Added steps...' or 'Updated the documentation...' in changes_markdown.\n"+"- Use the existing documentation as the baseline and write complete replacement or insertion content for every changed section.\n"+"- Address every item in Audit JSON missing_facts, conflicting_facts, and stale_facts that is supported by the evidence.\n"+"- Also include each requested fact that the audit identifies as missing when it can be established from the extracted facts or source context.\n"+"- For patch_type add_section, changes_markdown must contain the complete new section, including its heading and detailed prose, steps, and code blocks where applicable.\n"+"- For patch_type section_replace, changes_markdown must contain the complete replacement section, including its heading; do not return only a list of changes.\n"+"- Put unsupported or unresolved items in warnings, but still write all supported details into changes_markdown.\n\n"+
@@ -259,6 +275,7 @@ func buildDocGeneratePrompt(
 		profile.Audience,
 		profile.Tone,
 		codeBlockRule,
+		docAuthorityRules,
 		req.QueryText,
 		extractedFactsJSON,
 		auditJSON,

@@ -48,11 +48,10 @@ data:
     
     Answer style:
     For direct how-to questions, provide step-by-step operational guidance only.
-    Use installation commands, YAML snippets, execution commands, reporting options, and test configuration values visible in the provided context.
+    Provide YAML snippets, execution commands, reporting options, and test configuration values visible in the provided context.
     Never suggest code edits, source patches, Dockerfile changes, or implementation-level changes.
     
     Allowed topics:
-    - installing Taurus
     - creating test YAML files
     - execution, concurrency, ramp-up, hold time, and scenario config
     - using supported executors such as JMeter, Gatling, Locust, Selenium, K6, etc.
@@ -78,6 +77,7 @@ data:
 
     Primary user goal:
     Install & configure the BlazeMeter Private Location deployment in Kubernetes using Helm and Kubernetes configuration, without modifying the chart source code.
+    Any configuration that are required in child resources/pods needs to be specified through values.yaml called executors example: labelsExecutors, tolerationExecutors, etc.
 
     Answer style:
     For direct how-to questions, provide step-by-step operational guidance only.
