@@ -66,9 +66,9 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 		}
 	}
 
-	directAnswerGuidance := "For how-to questions, act as an application operator: provide a numbered sequence of steps for using the existing application. Include the exact commands, deployment manifests, flags, environment variables, and configuration values supported by the evidence. Explain where each value belongs and how to verify the result. Do not recommend edits to the application source code or explain how to implement the feature unless the Question explicitly asks for a code change or implementation details. Do not invent missing values; call out anything unknown."
+	directAnswerGuidance := "You are answering as the end-user of this application, not as a developer maintaining the codebase. Use the repository profile as the product use case and answer only what a user needs to do to achieve the stated goal. Base your guidance on the provided application profile, config files, and runtime evidence. Only use environment variables, file paths, manifests, ports, commands, and settings that are visible in the provided context; do not invent new values. If the repo is Kubernetes or Docker based, provide commands, manifests, env vars, volume mounts, ports, and health checks that users actually run. Do not propose changes to source code, Dockerfiles, functions, templates, or implementation internals. Do not print function signatures, patch diffs, or code changes. If a required value is not visible in the provided context, say 'Unknown based on provided context' and do not invent it."
 	if !isInstructionalRequest(req.QueryText) {
-		directAnswerGuidance = "Answer the question directly from the perspective of using the existing application. Include relevant commands or configuration only when needed. Do not recommend source code changes or implementation details unless the Question explicitly asks for them. Do not invent missing details; say what is unknown based on the provided context."
+		directAnswerGuidance = "Answer as the operator or user of the application. Focus on the exact usage required to achieve the goal, not on how the software is implemented internally. Use the application profile as the product context. Prefer runtime configuration, manifests, commands, and files a user actually executes. Only use values visible in the provided context; do not invent env vars or config keys. Do not propose source code changes, function edits, Dockerfile refactors, or implementation details. If nothing supported by the evidence matches the request, return 'No usage guidance found for this requirement in the provided context.'"
 	}
 	appProfileCtx := "No application profile is configured for this repository."
 	if req.AppProfile != "" {
@@ -76,11 +76,13 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 	}
 
 	directPrompt := fmt.Sprintf(
-		"Answer the user question using the combined code snapshot and change context below. "+
-			"Be concise and factual. If asked whether a feature is supported, answer with 'Yes' or 'No' "+
-			"Reconcile the current code with the changes: "+
-			"use the implementation evidence in the code snapshot and change hunks together to determine the most accurate answer. "+
-			"If they conflict, treat the current implementation as authoritative for present behavior and use changes to explain its history.\n\n"+
+		"Role: answer as a user of this application, not as an engineer changing the code. "+
+			"The application profile is the product use case for this repository and should guide the answer. "+
+			"Provide only practical usage steps for the user to achieve the goal. "+
+			"Prefer numbered steps and fenced code blocks showing the exact YAML, commands, env vars, files, and verification commands the user is supposed to run. "+
+			"Only use values visible in the provided context. Never invent env vars, config keys, or file paths. "+
+			"Never suggest code edits, source patches, Dockerfile rewrites, function printing, or implementation-level changes. "+
+			"If the request is not supported by the provided evidence, return 'No usage guidance found for this requirement in the provided context.'\n\n"+
 			"%s\n\n"+
 			"%s\n"+
 			"## Application Profile\n%s\n\n## Diff / Change Hunks\n%s\n\n## Code Snapshot / Source Reference\n%s\n\n## Question\n%s",

@@ -145,11 +145,18 @@ type Execution interface {
 // Execute runs the full RAG pipeline for a single request.
 func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, error) {
 	if !strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
-		profile, err := loadApplicationProfile(p.appProfileDir, p.appProfileFiles[req.RepoID])
+		profileFile := ""
+		if p.appProfileFiles != nil {
+			profileFile = p.appProfileFiles[req.RepoID]
+		}
+		profile, err := loadApplicationProfile(p.appProfileDir, profileFile)
 		if err != nil {
-			p.log.Warn().Err(err).Str("repo_id", req.RepoID).Msg("application profile lookup failed")
-		} else {
+			p.log.Warn().Err(err).Str("repo_id", req.RepoID).Str("profile_file", profileFile).Msg("application profile lookup failed")
+		} else if profile != "" {
 			req.AppProfile = profile
+			p.log.Info().Str("repo_id", req.RepoID).Str("profile_file", profileFile).Msg("application profile loaded for direct answer")
+		} else {
+			p.log.Warn().Str("repo_id", req.RepoID).Str("profile_file", profileFile).Msg("no application profile loaded for direct answer")
 		}
 	}
 
