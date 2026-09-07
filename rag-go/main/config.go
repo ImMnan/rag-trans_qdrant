@@ -53,7 +53,10 @@ func loadConfig() (config, error) {
 		GenDocCollection: getEnv("GEN_DOC_COLLECTION", "gen_doc_chunks"),
 		AppProfileDir:    getEnv("APP_PROFILE_DIR", "/etc/app-prof"),
 		AppProfileFiles: map[string]string{
-			"github.com/Blazemeter/bzm-crane": "bzm-crane.txt",
+			"github.com/Blazemeter/bzm-crane":  "bzm-crane.txt",
+			"github.com/Blazemeter/taurus":     "taurus.txt",
+			"github.com/Blazemeter/helm-crane": "helm-crane.txt",
+			"github.com/Blazemeter/bzm-mcp":    "bzm-mcp.txt",
 		},
 	}, nil
 }
