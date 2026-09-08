@@ -73,8 +73,14 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 		}
 	}
 
+	queryText := strings.TrimSpace(req.QueryText)
+	isInstructional := isInstructionalRequest(queryText)
+	isSupportQuestion := isSupportQuestion(queryText)
+
 	directAnswerGuidance := "You are answering as the end-user of this application, not as a developer maintaining the codebase. Use the repository profile as the product use case and answer only what a user needs to do to achieve the stated goal. Base your guidance on the provided application profile, config files, and runtime evidence. Only use environment variables, file paths, manifests, ports, commands, and settings that are visible in the provided context; do not invent new values. If the repo is Kubernetes or Docker based, provide commands, manifests, env vars, volume mounts, ports, and health checks that users actually run. Do not propose changes to source code, Dockerfiles, functions, templates, or implementation internals. Do not print function signatures, patch diffs, or code changes. If a required value is not visible in the provided context, say 'Unknown based on provided context' and do not invent it."
-	if !isInstructionalRequest(req.QueryText) {
+	if isSupportQuestion {
+		directAnswerGuidance = "Answer the question directly from the provided repository evidence. For factual support questions, give a concise yes/no or supported/unsupported answer and explain the evidence in plain language. Do not force the answer into a how-to workflow or step-by-step usage guide unless the user explicitly asked for instructions. If the evidence does not show support, say so clearly and avoid guessing. If nothing in the provided context supports a claim, return 'No evidence in the provided context supports this claim.'"
+	} else if !isInstructional {
 		directAnswerGuidance = "Answer as the operator or user of the application. Focus on the exact usage required to achieve the goal, not on how the software is implemented internally. Use the application profile as the product context. Prefer runtime configuration, manifests, commands, and files a user actually executes. Only use values visible in the provided context; do not invent env vars or config keys. Do not propose source code changes, function edits, Dockerfile refactors, or implementation details. If nothing supported by the evidence matches the request, return 'No usage guidance found for this requirement in the provided context.'"
 	}
 	appProfileCtx := "No application profile is configured for this repository."
@@ -83,13 +89,13 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 	}
 
 	directPrompt := fmt.Sprintf(
-		"Role: answer as a user of this application, not as an engineer changing the code. "+
-			"The application profile is the product use case for this repository and should guide the answer. "+
-			"Provide only practical usage steps for the user to achieve the goal. "+
-			"Prefer numbered steps and fenced code blocks showing the exact YAML, commands, env vars, files, and verification commands the user is supposed to run. "+
+		"Role: answer the question using the repository evidence, not as an engineer changing the code. "+
+			"Treat the application profile as product context, but do not force procedural steps when the request is a direct factual question. "+
+			"If the question is about support, capability, or existence, answer directly from the provided evidence and state whether it is supported, unsupported, or unconfirmed. "+
+			"Only provide numbered steps or fenced command blocks when the user is explicitly asking for instructions or usage guidance. "+
 			"Only use values visible in the provided context. Never invent env vars, config keys, or file paths. "+
 			"Never suggest code edits, source patches, Dockerfile rewrites, function printing, or implementation-level changes. "+
-			"If the request is not supported by the provided evidence, return 'No usage guidance found for this requirement in the provided context.'\n\n"+
+			"If the request is not supported by the provided evidence, return a clear evidence-based answer such as 'No evidence in the provided context supports this claim.' or 'No usage guidance found for this requirement in the provided context.' when it is truly a procedural question.\n\n"+
 			"%s\n\n"+
 			"%s\n"+
 			"## Application Profile\n%s\n\n## Diff / Change Hunks\n%s\n\n## Code Snapshot / Source Reference\n%s\n\n## Question\n%s",
@@ -308,6 +314,23 @@ func isInstructionalRequest(queryText string) bool {
 		"command", "script", "snippet", "example", "yaml", "json",
 		"curl", "steps", "install", "run", "execute", "integration",
 		"write", "create", "generate", "show", "share",
+	} {
+		if strings.Contains(query, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+func isSupportQuestion(queryText string) bool {
+	query := strings.ToLower(strings.TrimSpace(queryText))
+	if query == "" {
+		return false
+	}
+	for _, kw := range []string{
+		"do we support", "does it support", "is support", "supported",
+		"is there support", "can it", "possible to", "do you support",
+		"does this support", "is x supported", "support for",
 	} {
 		if strings.Contains(query, kw) {
 			return true
