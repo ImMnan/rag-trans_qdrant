@@ -86,10 +86,19 @@ type GeneratedDocument struct {
 	Tags         []string `json:"tags"`
 }
 
+// ResolvedInstructions is the full, user-followable set of steps for the topic, reconciled
+// against the current source/code evidence. Corrections lists each place where the existing
+// documentation was outdated and what was corrected.
+type ResolvedInstructions struct {
+	BodyMarkdown string   `json:"body_markdown"`
+	Corrections  []string `json:"corrections"`
+}
+
 type DocGenerateResult struct {
-	Delta    DocDelta          `json:"delta"`
-	Document GeneratedDocument `json:"document"`
-	Warnings []string          `json:"warnings"`
+	Delta                DocDelta             `json:"delta"`
+	Document             GeneratedDocument    `json:"document"`
+	ResolvedInstructions ResolvedInstructions `json:"resolved_instructions"`
+	Warnings             []string             `json:"warnings"`
 }
 
 type EvidenceSummary struct {
@@ -102,15 +111,16 @@ type EvidenceSummary struct {
 }
 
 type DocProcessOutput struct {
-	Status            DocDecisionStatus  `json:"status"`
-	ConfidenceOverall float64            `json:"confidence_overall"`
-	Topic             string             `json:"topic"`
-	MatchedDocs       []DocMatched       `json:"matched_docs"`
-	DecisionReason    string             `json:"decision_reason"`
-	EvidenceSummary   EvidenceSummary    `json:"evidence_summary"`
-	Delta             *DocDelta          `json:"delta,omitempty"`
-	Document          *GeneratedDocument `json:"document,omitempty"`
-	Warnings          []string           `json:"warnings"`
+	Status            DocDecisionStatus     `json:"status"`
+	ConfidenceOverall float64               `json:"confidence_overall"`
+	Topic             string                `json:"topic"`
+	MatchedDocs       []DocMatched          `json:"matched_docs"`
+	DecisionReason    string                `json:"decision_reason"`
+	EvidenceSummary   EvidenceSummary       `json:"evidence_summary"`
+	Delta             *DocDelta             `json:"delta,omitempty"`
+	Document          *GeneratedDocument    `json:"document,omitempty"`
+	Instructions      *ResolvedInstructions `json:"instructions,omitempty"`
+	Warnings          []string              `json:"warnings"`
 }
 
 type DocDecisionEngine interface {
@@ -259,12 +269,20 @@ func (p *LLMDocProcessor) Process(ctx context.Context, req Request, changeChunks
 			delta.TargetDocRef = audit.MatchedDocs[0].DocRef
 		}
 		final.Delta = &delta
+		instr := gen.ResolvedInstructions
+		final.Instructions = &instr
 	case StatusNewDocumentRequired:
 		doc := gen.Document
 		if strings.TrimSpace(doc.DocKind) == "" {
 			doc.DocKind = profile.Kind
 		}
 		final.Document = &doc
+	case StatusNoChangesRequired:
+		// The matched doc is still the answer surface; verify it against evidence and print it.
+		if len(audit.MatchedDocs) > 0 {
+			instr := gen.ResolvedInstructions
+			final.Instructions = &instr
+		}
 	}
 
 	b, err := json.Marshal(final)
@@ -318,7 +336,7 @@ func (p *LLMDocProcessor) runGenerate(
 	docChunks []string,
 	genDocChunks []string,
 ) (DocGenerateResult, error) {
-	schema := `{"delta":{"target_doc_ref":"string","patch_type":"section_replace|add_section|remove_section|note_fix","changed_sections":["string"],"changes_markdown":"string"},"document":{"doc_kind":"kb_article","title":"string","summary":"string","body_markdown":"string","tags":["string"]},"warnings":["string"]}`
+	schema := `{"delta":{"target_doc_ref":"string","patch_type":"section_replace|add_section|remove_section|note_fix","changed_sections":["string"],"changes_markdown":"string"},"document":{"doc_kind":"kb_article","title":"string","summary":"string","body_markdown":"string","tags":["string"]},"resolved_instructions":{"body_markdown":"string","corrections":["string"]},"warnings":["string"]}`
 	raw, err := p.completeAndRepairJSON(ctx, req, "generate", schema, buildDocGeneratePrompt(req, decision, extractRaw, auditRaw, profile, docChunks, genDocChunks))
 	if err != nil {
 		return DocGenerateResult{}, err
@@ -786,6 +804,9 @@ func normalizeGenerate(in *DocGenerateResult) {
 	}
 	if in.Document.Tags == nil {
 		in.Document.Tags = []string{}
+	}
+	if in.ResolvedInstructions.Corrections == nil {
+		in.ResolvedInstructions.Corrections = []string{}
 	}
 }
 

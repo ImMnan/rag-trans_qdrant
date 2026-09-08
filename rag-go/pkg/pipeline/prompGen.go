@@ -255,15 +255,24 @@ func buildDocGeneratePrompt(
 			"Update patch rules (apply when status is update_required):\n"+
 			"- changes_markdown is the actual ready-to-paste Markdown content for the change, not a description of the change.\n"+
 			"- Never write a summary such as 'Added steps...' or 'Updated the documentation...' in changes_markdown.\n"+"- Use the existing documentation as the baseline and write complete replacement or insertion content for every changed section.\n"+"- Address every item in Audit JSON missing_facts, conflicting_facts, and stale_facts that is supported by the evidence.\n"+"- Also include each requested fact that the audit identifies as missing when it can be established from the extracted facts or source context.\n"+"- For patch_type add_section, changes_markdown must contain the complete new section, including its heading and detailed prose, steps, and code blocks where applicable.\n"+"- For patch_type section_replace, changes_markdown must contain the complete replacement section, including its heading; do not return only a list of changes.\n"+"- Put unsupported or unresolved items in warnings, but still write all supported details into changes_markdown.\n\n"+
+			"Resolved instructions rules (apply when status is update_required or no_changes_required AND a matched doc exists):\n"+
+			"- resolved_instructions is what gets shown to the end user; it must be the FULL set of step-by-step instructions to accomplish the Original Query, not just the diff/patch.\n"+
+			"- Start from the matched existing documentation as the baseline, then verify every step against the Extracted Facts / source evidence before including it.\n"+
+			"- If a documented step, value, or claim conflicts with or is outdated relative to the evidence (see Audit JSON conflicting_facts/stale_facts), do NOT silently reproduce the old text: replace it with the corrected step and add a short inline note such as '(Corrected: doc said X; source shows Y)' right after that step.\n"+
+			"- Also record every such fix as a short sentence in the corrections array, e.g. 'Step 3 previously said X; corrected to Y based on <file>.'\n"+
+			"- If nothing needed correcting, still populate body_markdown with the full verified steps and leave corrections as an empty array.\n"+
+			"- body_markdown must follow the same numbered-step and fenced-code-block requirements as Steps/Validation elsewhere in this prompt.\n"+
+			"- Leave resolved_instructions.body_markdown empty only when status is new_document_required (the document field already carries the full content) or when no doc was matched at all.\n\n"+
 			"Return a single JSON object with this shape:\n"+
 			"{\"delta\":{\"target_doc_ref\":\"string\",\"patch_type\":\"section_replace|add_section|remove_section|note_fix\",\"changed_sections\":[\"string\"],\"changes_markdown\":\"string\"},"+
 			"\"document\":{\"doc_kind\":\"string\",\"title\":\"string\",\"summary\":\"string\",\"body_markdown\":\"string\",\"tags\":[\"string\"]},"+
+			"\"resolved_instructions\":{\"body_markdown\":\"string\",\"corrections\":[\"string\"]},"+
 			"\"warnings\":[\"string\"]}\n\n"+
 			"JSON encoding rules:\n"+
-			"- status update_required: populate delta; set document to {}.\n"+
-			"- status new_document_required: populate document; set delta to {}.\n"+
-			"- status no_changes_required: set both delta and document to {}.\n"+
-			"- Newlines inside string values MUST be encoded as \\n. Triple-backtick fences are required in Steps/Validation content for update_required and new_document_required outputs.\n\n"+
+			"- status update_required: populate delta and resolved_instructions; set document to {}.\n"+
+			"- status new_document_required: populate document; set delta and resolved_instructions to {}.\n"+
+			"- status no_changes_required: set delta and document to {}; populate resolved_instructions when a doc was matched, otherwise leave it {}.\n"+
+			"- Newlines inside string values MUST be encoded as \\n. Triple-backtick fences are required in Steps/Validation content for update_required and new_document_required outputs, and in resolved_instructions.body_markdown whenever it is populated.\n\n"+
 			"## Original Query\n%s\n\n"+
 			"## Extracted Facts JSON\n%s\n\n"+
 			"## Audit JSON\n%s\n\n"+
