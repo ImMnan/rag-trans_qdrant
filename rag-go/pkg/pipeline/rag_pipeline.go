@@ -220,7 +220,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	maxTokens := ResolveTokenBudget(req, messages)
 
 	// 4. Call LLM
-	p.log.Debug().
+	p.log.Info().
 		Str("messages_sha256", hashMessages(messages)).
 		Int("message_count", len(messages)).
 		Int("max_tokens", maxTokens).

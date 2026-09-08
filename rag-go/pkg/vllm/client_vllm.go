@@ -109,6 +109,6 @@ func (c *HTTPClient) Complete(ctx context.Context, messages []pipeline.Message, 
 	}
 
 	answer := result.Choices[0].Message.Content
-	c.log.Debug().Int("response_len", len(answer)).Msg("vllm http completion received")
+	c.log.Info().Int("response_len", len(answer)).Msg("vllm http completion received")
 	return answer, nil
 }

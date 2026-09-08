@@ -21,6 +21,12 @@ import (
 func main() {
 	// --- Logging ---
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	// Debug logs are emitted only when LOG_VERBOSE is set; default level is Info.
+	if os.Getenv("LOG_VERBOSE") == "true" {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	} else {
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	}
 	log.Logger = zerolog.New(os.Stdout).With().Timestamp().Str("service", "orca").Logger()
 
 	// --- Config from env ---

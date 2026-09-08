@@ -154,7 +154,7 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 			Msg("qdrant chunk retrieved")
 	}
 
-	c.log.Debug().
+	c.log.Info().
 		Str("collection", collection).
 		Int("hits", len(chunks)).
 		Msg("qdrant query complete")
