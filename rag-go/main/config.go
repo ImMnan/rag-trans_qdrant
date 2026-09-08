@@ -57,6 +57,7 @@ func loadConfig() (config, error) {
 			"github.com/Blazemeter/taurus":     "taurus.txt",
 			"github.com/Blazemeter/helm-crane": "helm-crane.txt",
 			"github.com/Blazemeter/bzm-mcp":    "bzm-mcp.txt",
+			"github.com/Blazemeter/sv-mcp":     "sv-mcp.txt",
 		},
 	}, nil
 }
