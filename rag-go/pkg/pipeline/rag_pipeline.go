@@ -200,8 +200,8 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	}
 
 	// 3. Build prompt
-	changeChunks := TruncateChunksToCharBudget(changeResult.chunks, maxContextCharsPerSide)
-	codeChunks := TruncateChunksToCharBudget(codeResult.chunks, maxContextCharsPerSide)
+	budgeted := AllocateChunkCharBudget([][]string{changeResult.chunks, codeResult.chunks}, maxContextCharsTotal)
+	changeChunks, codeChunks := budgeted[0], budgeted[1]
 	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) {
 		p.log.Warn().
 			Int("change_chunks_kept", len(changeChunks)).
@@ -353,11 +353,14 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		p.log.Warn().Err(genDocResult.err).Str("collection", p.genDocCollection).Msg("qdrant query failed")
 	}
 
-	// 3. Truncate each retrieved set to stay within the model's context budget.
-	changeChunks := TruncateChunksToCharBudget(changeResult.chunks, maxContextCharsPerSide)
-	codeChunks := TruncateChunksToCharBudget(codeResult.chunks, maxContextCharsPerSide)
-	docChunks := TruncateChunksToCharBudget(docResult.chunks, maxContextCharsPerSide)
-	genDocChunks := TruncateChunksToCharBudget(genDocResult.chunks, maxContextCharsPerSide)
+	// 3. Share one context budget across every retrieved side.
+	budgeted := AllocateChunkCharBudget([][]string{
+		changeResult.chunks,
+		codeResult.chunks,
+		docResult.chunks,
+		genDocResult.chunks,
+	}, maxContextCharsTotal)
+	changeChunks, codeChunks, docChunks, genDocChunks := budgeted[0], budgeted[1], budgeted[2], budgeted[3]
 	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) ||
 		len(docChunks) < len(docResult.chunks) || len(genDocChunks) < len(genDocResult.chunks) {
 		p.log.Warn().

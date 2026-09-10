@@ -16,10 +16,76 @@ const (
 	// truncated JSON whose markdown fields come back empty after repair.
 	minGenerateOutputTokens = 3072
 
-	// maxContextCharsPerSide caps retrieved chunk content (change or code side) before prompting,
-	// as a hard backstop since the ~4-chars/token estimate below can undercount dense code text.
-	maxContextCharsPerSide = 30000
+	// charsPerToken is the rough ratio used throughout this file.
+	charsPerToken = 4
+
+	// promptOverheadTokens reserves room for the fixed prompt rules plus the facts and audit
+	// JSON that sit alongside retrieved chunks in the largest doc-workflow call.
+	promptOverheadTokens = 2000
+
+	// maxContextCharsTotal is the combined budget for every retrieved chunk in one request.
+	// It is a single shared pool rather than a per-side cap: the doc workflow has four sides,
+	// and four independent caps would together exceed the whole model window.
+	maxContextCharsTotal = (defaultModelContextTokens - defaultSafetyTokens - minGenerateOutputTokens - promptOverheadTokens) * charsPerToken
 )
+
+// AllocateChunkCharBudget distributes one shared character budget across the given chunk
+// sides. Sides that need less than an equal share release the remainder to the others, so
+// an empty side (for example generated docs) does not waste its allowance.
+func AllocateChunkCharBudget(sides [][]string, totalChars int) [][]string {
+	out := make([][]string, len(sides))
+	pending := make([]int, 0, len(sides))
+	for i, side := range sides {
+		if len(side) == 0 {
+			out[i] = side
+			continue
+		}
+		pending = append(pending, i)
+	}
+
+	remaining := totalChars
+	for len(pending) > 0 {
+		share := remaining / len(pending)
+		if share <= 0 {
+			for _, i := range pending {
+				out[i] = []string{}
+			}
+			break
+		}
+
+		stillPending := pending[:0:0]
+		progressed := false
+		for _, i := range pending {
+			if chunksCharSize(sides[i]) > share {
+				stillPending = append(stillPending, i)
+				continue
+			}
+			// Fits entirely, so it only consumes what it needs and frees the rest.
+			out[i] = sides[i]
+			remaining -= chunksCharSize(sides[i])
+			progressed = true
+		}
+
+		if !progressed {
+			// Everyone left wants more than an equal share; split what is left evenly.
+			for _, i := range stillPending {
+				out[i] = TruncateChunksToCharBudget(sides[i], share)
+			}
+			break
+		}
+		pending = stillPending
+	}
+
+	return out
+}
+
+func chunksCharSize(chunks []string) int {
+	total := 0
+	for _, c := range chunks {
+		total += len(c) + 4 // + separator overhead
+	}
+	return total
+}
 
 // TruncateChunksToCharBudget keeps chunks, in order, until adding the next one would
 // exceed maxChars; it drops the remainder rather than cutting a chunk mid-content.
