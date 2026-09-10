@@ -45,12 +45,13 @@ const evidenceGroundingRules = "Evidence grounding:\n" +
 	"Only call a capability supported if the context shows it invoked, registered, or configured; otherwise say it is defined but its use is not visible in the provided context.\n" +
 	"- Cite the file path from the [source: ...] label when stating a technical fact.\n"
 
-const docAuthorityRules = "Documentation authority rules:\n" +
-	"- Code/change evidence is the paramount truth only for facts that directly answer the Original Query.\n" +
-	"- Do not use unrelated implementation details to mark existing documentation stale, incomplete, or conflicting.\n" +
-	"- When code evidence is incomplete, ambiguous, only comment-derived, or outside the query scope, preserve the existing documentation and put the uncertainty in warnings/unknowns.\n" +
-	"- Existing documentation remains the fallback source for documented use-case context unless specific code/change evidence clearly disproves that documented point.\n" +
-	"- A generated document or patch must stay within the documented use case and the Original Query; do not broaden the task because adjacent code exists.\n"
+const docAuthorityRules = "Evidence authority rules:\n" +
+	"- Source code and change evidence is the ground truth for anything within the scope of the Original Query. Existing documentation is a candidate artifact to be verified against it, never the other way round.\n" +
+	"- When documentation and code disagree on a query-scoped point, the code wins: use the code value and explicitly call the documentation outdated.\n" +
+	"- When no documentation matches, or the matched documentation is about a different topic, ignore it entirely and answer from the code evidence. Never bend the answer to fit an unrelated document.\n" +
+	"- Documentation may still supply context the code cannot show (intent, prerequisites, ownership, external systems). Use it for that, and label it as documented rather than verified.\n" +
+	"- Do not use implementation details outside the Original Query to mark documentation stale or conflicting; stay within the query scope.\n" +
+	"- Where the code evidence is genuinely absent or ambiguous, say so in warnings/unknowns instead of inventing a value or silently trusting the documentation.\n"
 
 // buildPrompt assembles the LLM messages from retrieved chunks.
 func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
@@ -192,6 +193,7 @@ func buildDocAuditPrompt(req Request, extractedFactsJSON string, docChunks, genD
 	genDocCtx := joinChunks(genDocChunks, "No generated documentation context found.")
 
 	systemPrompt := "You audit existing documentation against extracted code facts. " +
+		"The code facts are the ground truth; your job is to judge the documentation against them, not to defend it. " +
 		"Use only the provided facts and doc context. " +
 		"Return strict JSON and do not add markdown fences."
 
@@ -199,18 +201,18 @@ func buildDocAuditPrompt(req Request, extractedFactsJSON string, docChunks, genD
 		"Return JSON with this shape only:\n"+
 			"{\"matched_docs\":[{\"doc_ref\":string,\"title\":string,\"why_matched\":string,\"match_confidence\":number}],\"missing_facts\":[string],\"conflicting_facts\":[string],\"stale_facts\":[string],\"summary\":string}\n\n"+
 			"Rules:\n"+
-			"- A matched doc must directly relate to the query topic.\n"+
-			"- Treat code-derived facts as ground truth only for the specific Original Query.\n"+
+			"- Only match a document that actually covers the subject of the Original Query. A shared keyword, a shared product name, or generic overlap is NOT a match.\n"+
+			"- Returning an empty matched_docs array is the correct answer when nothing genuinely covers the query. Never pad the list with the closest available document.\n"+
+			"- match_confidence range must be 0.0 to 1.0. Score below 0.75 unless the document clearly covers the query topic; anything below that is discarded downstream.\n"+
+			"- Treat the extracted code facts as ground truth for the Original Query. Where a matched document states something different, list it under conflicting_facts or stale_facts rather than accepting the document.\n"+
+			"- List under missing_facts any query-scoped code fact the matched documentation does not cover.\n"+
 			"- Do not mark documentation missing, conflicting, or stale for facts outside the Original Query, even if those facts appear in code.\n"+
-			"- If extracted facts or source evidence do not 100%% clearly disprove the documented use case, keep the documentation valid and mention uncertainty in summary.\n"+
-			"- Prefer a higher match_confidence for an existing document that covers the same use case, even when the code evidence has gaps.\n"+
-			"- match_confidence range must be 0.0 to 1.0.\n"+
 			"- Each documentation chunk is prefixed with \"[source: <filename>]\" on its own line. "+
 			"When a chunk matches the query topic, copy that exact filename (e.g. \"docs/gatling.md\") into the doc_ref field. "+
-			"Never leave doc_ref empty when a [source: ...] label is present in the matched chunk.\n\n"+
+			"Never invent a doc_ref and never leave it empty when a [source: ...] label is present in the matched chunk.\n\n"+
 			"%s\n"+
 			"## Original Query\n%s\n\n"+
-			"## Extracted Facts JSON\n%s\n\n"+
+			"## Extracted Facts JSON (ground truth)\n%s\n\n"+
 			"## Existing Documentation Chunks\n%s\n\n"+
 			"## Existing Generated Documentation Chunks\n%s",
 		docAuthorityRules, req.QueryText, extractedFactsJSON, docCtx, genDocCtx,
@@ -228,9 +230,12 @@ func buildDocGeneratePrompt(
 	extractedFactsJSON string,
 	auditJSON string,
 	profile DocProfile,
+	changeChunks []string,
+	codeChunks []string,
 	docChunks []string,
 	genDocChunks []string,
 ) []Message {
+	evidenceCtx := joinChunks(mergeEvidenceChunks(changeChunks, codeChunks), "No change or code context found.")
 	docCtx := joinChunks(docChunks, "No documentation context found.")
 	genDocCtx := joinChunks(genDocChunks, "No generated documentation context found.")
 
@@ -244,6 +249,8 @@ func buildDocGeneratePrompt(
 
 	systemPrompt := "You are a technical writer producing user-executable documentation. " +
 		"Write steps as concrete user actions, not feature descriptions. " +
+		"The Source Code And Change Evidence section is the authoritative truth: when it contradicts the existing documentation, follow the code and say so. " +
+		"Never copy the placeholder words from the JSON shape below (\"string\", \"kb_article\") into your answer; every field must carry real content derived from the evidence. " +
 		"Return your result encoded as a single JSON object. Do not wrap the entire response in a markdown fence; markdown inside JSON string fields is allowed and expected."
 
 	userPrompt := fmt.Sprintf(
@@ -256,7 +263,9 @@ func buildDocGeneratePrompt(
 			"3. Inside code blocks, add a short comment only when a value is non-obvious; do not fabricate values not supported by the evidence.\n"+
 			"4. If evidence is insufficient for a full runnable example, list what is unknown in warnings instead of inventing details.\n"+
 			"5. Preserve existing documentation for any use-case detail outside the Original Query or not 100%% clearly changed by code/change evidence.\n"+
-			"6. Do not replace valid documented use-case context with a generated interpretation unless Audit JSON shows a specific query-scoped conflict, stale fact, or missing fact.\n\n"+
+			"6. When no document was matched, write the answer purely from the Source Code And Change Evidence; do not borrow structure or claims from unrelated documentation chunks.\n"+
+			"7. Values that appear in the Source Code And Change Evidence outrank the same value written in the existing documentation; cite the file path when you rely on code evidence.\n"+
+			"8. Every markdown field you populate must be real content. Returning the literal placeholder \"string\", or an empty body for the field required by the decision status, is an invalid answer.\n\n"+
 			"%s\n"+
 			"Update patch rules (apply when status is update_required):\n"+
 			"- changes_markdown is the actual ready-to-paste Markdown content for the change, not a description of the change.\n"+
@@ -280,6 +289,7 @@ func buildDocGeneratePrompt(
 			"- status no_changes_required: set delta and document to {}; populate resolved_instructions when a doc was matched, otherwise leave it {}.\n"+
 			"- Newlines inside string values MUST be encoded as \\n. Triple-backtick fences are required in Steps/Validation content for update_required and new_document_required outputs, and in resolved_instructions.body_markdown whenever it is populated.\n\n"+
 			"## Original Query\n%s\n\n"+
+			"## Source Code And Change Evidence (authoritative)\n%s\n\n"+
 			"## Extracted Facts JSON\n%s\n\n"+
 			"## Audit JSON\n%s\n\n"+
 			"## Existing Documentation Chunks\n%s\n\n"+
@@ -292,6 +302,7 @@ func buildDocGeneratePrompt(
 		codeBlockRule,
 		docAuthorityRules,
 		req.QueryText,
+		evidenceCtx,
 		extractedFactsJSON,
 		auditJSON,
 		docCtx,
@@ -345,6 +356,11 @@ func buildDocRepairPrompt(stepName, schemaHint, invalidOutput string) []Message 
 		"Step: %s\n"+
 			"Schema hint:\n%s\n\n"+
 			"Invalid output:\n%s\n\n"+
+			"Rules:\n"+
+			"- The schema hint describes field names and types only. Never copy its placeholder values "+
+			"(\"string\", \"kb_article\", the pipe-separated enum lists) into the repaired JSON.\n"+
+			"- Keep every piece of real content from the invalid output, including full markdown bodies.\n"+
+			"- If the invalid output was cut off mid-value, close the structure without discarding the text already produced.\n\n"+
 			"Return corrected JSON only.",
 		stepName,
 		schemaHint,

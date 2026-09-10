@@ -138,8 +138,9 @@ func (p *RAGPipeline) WithLogger(log zerolog.Logger) *RAGPipeline {
 	return p
 }
 
-type Execution interface {
-	Execute(ctx context.Context, req Request) (*Response, error)
+func (p *DOCPipeline) WithLogger(log zerolog.Logger) *DOCPipeline {
+	p.log = log
+	return p
 }
 
 // Execute runs the full RAG pipeline for a single request.

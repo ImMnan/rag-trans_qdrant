@@ -10,6 +10,12 @@ const (
 	minRequestTokenLimit = 64
 	maxRequestTokenLimit = 12288
 
+	// minGenerateOutputTokens is the room the generate step needs to emit a full document
+	// or instruction body. Inputs are trimmed to protect it, otherwise a large retrieved
+	// context starves the output budget down to minAutoBudgetTokens and the model returns
+	// truncated JSON whose markdown fields come back empty after repair.
+	minGenerateOutputTokens = 3072
+
 	// maxContextCharsPerSide caps retrieved chunk content (change or code side) before prompting,
 	// as a hard backstop since the ~4-chars/token estimate below can undercount dense code text.
 	maxContextCharsPerSide = 30000
@@ -55,9 +61,8 @@ func ResolveDocStepTokenBudget(req Request, stepName string, messages []Message)
 	switch stepName {
 	case "extract", "audit":
 		multiplier = 0.6
-	case "repair":
-		multiplier = 0.45
-	case "generate":
+	case "generate", "repair":
+		// repair has to reproduce the full markdown it is fixing, so it gets the same room.
 		multiplier = 1.0
 	}
 

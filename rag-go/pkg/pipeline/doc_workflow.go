@@ -128,76 +128,93 @@ type DocDecisionEngine interface {
 	ComputeConfidence(extract DocExtractResult, audit DocAuditResult, decision DocDecision) float64
 }
 
-type DefaultDocDecisionEngine struct {
-	MinDocMatchConfidence float64
-}
+type DefaultDocDecisionEngine struct{}
+
+// minDocMatchConfidence is the floor a doc must clear to be treated as covering the query.
+const minDocMatchConfidence = 0.75
 
 func NewDefaultDocDecisionEngine() *DefaultDocDecisionEngine {
-	return &DefaultDocDecisionEngine{MinDocMatchConfidence: 0.75}
+	return &DefaultDocDecisionEngine{}
 }
 
+// Decide is evidence-first: source code determines what is true, and the matched
+// documentation only determines whether that truth is patched in or written fresh.
 func (e *DefaultDocDecisionEngine) Decide(extract DocExtractResult, audit DocAuditResult) DocDecision {
-	maxMatch := 0.0
-	for _, d := range audit.MatchedDocs {
-		if d.MatchConfidence > maxMatch {
-			maxMatch = d.MatchConfidence
+	hasCodeEvidence := len(extract.Facts) > 0
+
+	if len(audit.MatchedDocs) == 0 {
+		if hasCodeEvidence {
+			return DocDecision{Status: StatusNewDocumentRequired, Reason: "Source code evidence answers the query but no existing documentation covers it."}
+		}
+		return DocDecision{Status: StatusNewDocumentRequired, Reason: "No existing documentation matched the query; answering from the available source evidence."}
+	}
+
+	if len(audit.ConflictingFacts) > 0 || len(audit.StaleFacts) > 0 {
+		return DocDecision{Status: StatusUpdateRequired, Reason: "Source code evidence contradicts the matched documentation; the documentation is outdated."}
+	}
+
+	if len(audit.MissingFacts) > 0 {
+		return DocDecision{Status: StatusUpdateRequired, Reason: "Matched documentation does not cover query-scoped facts established from source code."}
+	}
+
+	if !hasCodeEvidence {
+		return DocDecision{Status: StatusNoChangesRequired, Reason: "No query-scoped source code evidence contradicts the matched documentation."}
+	}
+
+	return DocDecision{Status: StatusNoChangesRequired, Reason: "Matched documentation is consistent with current source code evidence."}
+}
+
+// ComputeConfidence is driven by the strength of the code evidence; documentation
+// agreement is only a small corroborating bonus.
+func (e *DefaultDocDecisionEngine) ComputeConfidence(extract DocExtractResult, audit DocAuditResult, decision DocDecision) float64 {
+	base := 0.35
+
+	switch {
+	case len(extract.Facts) >= 3:
+		base += 0.25
+	case len(extract.Facts) == 2:
+		base += 0.18
+	case len(extract.Facts) == 1:
+		base += 0.10
+	}
+
+	strongFacts := 0
+	for _, f := range extract.Facts {
+		if f.Confidence >= 0.75 {
+			strongFacts++
 		}
 	}
-
-	if len(audit.MatchedDocs) == 0 || maxMatch < e.MinDocMatchConfidence {
-		return DocDecision{Status: StatusNewDocumentRequired, Reason: "No sufficiently relevant existing documentation found."}
+	if strongFacts >= 2 {
+		base += 0.15
+	} else if strongFacts == 1 {
+		base += 0.08
 	}
 
-	if len(audit.ConflictingFacts) > 0 || len(audit.MissingFacts) > 0 || len(audit.StaleFacts) > 0 {
-		return DocDecision{Status: StatusUpdateRequired, Reason: "Relevant documentation exists but has gaps or conflicts with code evidence."}
+	if len(extract.Unknowns) == 0 {
+		base += 0.10
+	} else if len(extract.Unknowns) > 2 {
+		base -= 0.10
 	}
 
-	if len(extract.Unknowns) > 0 {
-		return DocDecision{Status: StatusNoChangesRequired, Reason: "Relevant documentation exists and code evidence does not clearly require a change; unresolved unknowns fall back to the existing documentation."}
+	if len(audit.MatchedDocs) > 0 && len(audit.ConflictingFacts) == 0 && len(audit.StaleFacts) == 0 {
+		base += 0.08
 	}
 
-	if len(extract.Facts) == 0 {
-		return DocDecision{Status: StatusNoChangesRequired, Reason: "Relevant documentation exists and no query-scoped code evidence clearly requires a change."}
+	if decision.Status == StatusNoChangesRequired && len(extract.Facts) == 0 {
+		base -= 0.10
 	}
 
-	return DocDecision{Status: StatusNoChangesRequired, Reason: "Relevant documentation is aligned with current code evidence."}
+	return clampFloat(base, 0.0, 0.95)
 }
 
-func (e *DefaultDocDecisionEngine) ComputeConfidence(extract DocExtractResult, audit DocAuditResult, decision DocDecision) float64 {
-	base := 0.40
-
-	if len(extract.Facts) >= 2 {
-		base += 0.10
-	} else if len(extract.Facts) == 1 {
-		base += 0.05
+func clampFloat(v, minV, maxV float64) float64 {
+	if v < minV {
+		return minV
 	}
-	if len(extract.Unknowns) == 0 {
-		base += 0.08
+	if v > maxV {
+		return maxV
 	}
-	if len(audit.MatchedDocs) > 0 {
-		base += 0.10
-	}
-	if len(audit.ConflictingFacts) == 0 {
-		base += 0.08
-	}
-	if len(audit.MissingFacts) == 0 {
-		base += 0.08
-	}
-	if len(audit.StaleFacts) == 0 {
-		base += 0.08
-	}
-	if decision.Status == StatusNoChangesRequired && len(extract.Facts) > 0 && len(audit.MatchedDocs) > 0 {
-		base += 0.03
-	}
-
-	if base > 0.95 {
-		base = 0.95
-	}
-	if base < 0.0 {
-		base = 0.0
-	}
-
-	return base
+	return v
 }
 
 type DocProcessor interface {
@@ -229,6 +246,7 @@ func (p *LLMDocProcessor) Process(ctx context.Context, req Request, changeChunks
 		return "", err
 	}
 
+	pruneWarnings := pruneUnreliableMatchedDocs(&audit, docChunks, genDocChunks)
 	coverageWarnings := enforceAuditFactCoverage(req, extract, &audit, docChunks, genDocChunks)
 	auditForGenerate, err := json.Marshal(audit)
 	if err != nil {
@@ -237,7 +255,7 @@ func (p *LLMDocProcessor) Process(ctx context.Context, req Request, changeChunks
 
 	decision := p.engine.Decide(extract, audit)
 
-	gen, err := p.runGenerate(ctx, req, decision, extractRaw, string(auditForGenerate), profile, docChunks, genDocChunks)
+	gen, err := p.runGenerate(ctx, req, decision, extractRaw, string(auditForGenerate), profile, changeChunks, codeChunks, docChunks, genDocChunks)
 	if err != nil {
 		return "", err
 	}
@@ -256,7 +274,7 @@ func (p *LLMDocProcessor) Process(ctx context.Context, req Request, changeChunks
 			ConflictsCount:    len(audit.ConflictingFacts),
 			StaleFactsCount:   len(audit.StaleFacts),
 		},
-		Warnings: uniqueStrings(append(gen.Warnings, coverageWarnings...)),
+		Warnings: uniqueStrings(append(append(gen.Warnings, coverageWarnings...), pruneWarnings...)),
 	}
 	if topic := strings.TrimSpace(extract.Topic); topic != "" {
 		final.Topic = topic
@@ -265,8 +283,8 @@ func (p *LLMDocProcessor) Process(ctx context.Context, req Request, changeChunks
 	switch decision.Status {
 	case StatusUpdateRequired:
 		delta := gen.Delta
-		if strings.TrimSpace(delta.TargetDocRef) == "" && len(audit.MatchedDocs) > 0 {
-			delta.TargetDocRef = audit.MatchedDocs[0].DocRef
+		if strings.TrimSpace(delta.TargetDocRef) == "" {
+			delta.TargetDocRef = bestMatchedDocRef(audit.MatchedDocs)
 		}
 		final.Delta = &delta
 		instr := gen.ResolvedInstructions
@@ -333,21 +351,133 @@ func (p *LLMDocProcessor) runGenerate(
 	extractRaw string,
 	auditRaw string,
 	profile DocProfile,
+	changeChunks []string,
+	codeChunks []string,
 	docChunks []string,
 	genDocChunks []string,
 ) (DocGenerateResult, error) {
 	schema := `{"delta":{"target_doc_ref":"string","patch_type":"section_replace|add_section|remove_section|note_fix","changed_sections":["string"],"changes_markdown":"string"},"document":{"doc_kind":"kb_article","title":"string","summary":"string","body_markdown":"string","tags":["string"]},"resolved_instructions":{"body_markdown":"string","corrections":["string"]},"warnings":["string"]}`
-	raw, err := p.completeAndRepairJSON(ctx, req, "generate", schema, buildDocGeneratePrompt(req, decision, extractRaw, auditRaw, profile, docChunks, genDocChunks))
-	if err != nil {
-		return DocGenerateResult{}, err
+
+	messages := p.fitGeneratePrompt(req, decision, extractRaw, auditRaw, profile, changeChunks, codeChunks, docChunks, genDocChunks)
+
+	var lastErr error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			messages = append(messages, Message{
+				Role: "user",
+				Content: "Your previous answer was rejected: " + lastErr.Error() + ". " +
+					"Return the same JSON shape again, but fill the markdown field required by the decision status with the complete, " +
+					"real, step-by-step content derived from the Source Code And Change Evidence and the existing documentation. " +
+					"Do not echo the placeholder word \"string\".",
+			})
+		}
+
+		raw, err := p.completeAndRepairJSON(ctx, req, "generate", schema, messages)
+		if err != nil {
+			return DocGenerateResult{}, err
+		}
+
+		var out DocGenerateResult
+		if err := json.Unmarshal([]byte(raw), &out); err != nil {
+			return DocGenerateResult{}, fmt.Errorf("parse generate result: %w", err)
+		}
+		normalizeGenerate(&out)
+
+		if lastErr = validateGenerateResult(decision.Status, out); lastErr == nil {
+			return out, nil
+		}
 	}
 
-	var out DocGenerateResult
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return DocGenerateResult{}, fmt.Errorf("parse generate result: %w", err)
+	return DocGenerateResult{}, fmt.Errorf("generate step produced unusable content: %w", lastErr)
+}
+
+// fitGeneratePrompt drops trailing context chunks until the generate call has at least
+// minGenerateOutputTokens of output room, keeping code evidence over documentation prose.
+func (p *LLMDocProcessor) fitGeneratePrompt(
+	req Request,
+	decision DocDecision,
+	extractRaw string,
+	auditRaw string,
+	profile DocProfile,
+	changeChunks []string,
+	codeChunks []string,
+	docChunks []string,
+	genDocChunks []string,
+) []Message {
+	build := func() []Message {
+		return buildDocGeneratePrompt(req, decision, extractRaw, auditRaw, profile, changeChunks, codeChunks, docChunks, genDocChunks)
 	}
-	normalizeGenerate(&out)
-	return out, nil
+
+	messages := build()
+	if req.TokenLimit > 0 {
+		return messages
+	}
+
+	for ResolveDocStepTokenBudget(req, "generate", messages) < minGenerateOutputTokens {
+		switch {
+		case len(genDocChunks) > 0:
+			genDocChunks = genDocChunks[:len(genDocChunks)-1]
+		case len(docChunks) > 1:
+			docChunks = docChunks[:len(docChunks)-1]
+		case len(changeChunks) > 1:
+			changeChunks = changeChunks[:len(changeChunks)-1]
+		case len(codeChunks) > 1:
+			codeChunks = codeChunks[:len(codeChunks)-1]
+		default:
+			return messages
+		}
+		messages = build()
+	}
+
+	return messages
+}
+
+// validateGenerateResult rejects truncated or schema-echoing output, which otherwise
+// surfaces as a status with no markdown or a document full of placeholder text.
+func validateGenerateResult(status DocDecisionStatus, out DocGenerateResult) error {
+	switch status {
+	case StatusNewDocumentRequired:
+		if isPlaceholderContent(out.Document.BodyMarkdown) {
+			return fmt.Errorf("document.body_markdown is empty or placeholder for status %s", status)
+		}
+		if isPlaceholderContent(out.Document.Title) {
+			return fmt.Errorf("document.title is empty or placeholder for status %s", status)
+		}
+	case StatusUpdateRequired:
+		if isPlaceholderContent(out.Delta.ChangesMarkdown) {
+			return fmt.Errorf("delta.changes_markdown is empty or placeholder for status %s", status)
+		}
+		if isPlaceholderContent(out.ResolvedInstructions.BodyMarkdown) {
+			return fmt.Errorf("resolved_instructions.body_markdown is empty or placeholder for status %s", status)
+		}
+	}
+	return nil
+}
+
+func isPlaceholderContent(value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return true
+	}
+	switch strings.ToLower(trimmed) {
+	case "string", "null", "n/a", "kb_article":
+		return true
+	}
+	return false
+}
+
+func bestMatchedDocRef(matchedDocs []DocMatched) string {
+	best := ""
+	bestConfidence := -1.0
+	for _, doc := range matchedDocs {
+		ref := strings.TrimSpace(doc.DocRef)
+		if ref == "" || doc.MatchConfidence <= bestConfidence {
+			continue
+		}
+		best = ref
+		bestConfidence = doc.MatchConfidence
+	}
+	return best
 }
 
 func (p *LLMDocProcessor) completeAndRepairJSON(ctx context.Context, req Request, stepName, schemaHint string, messages []Message) (string, error) {
@@ -554,6 +684,44 @@ func validateAuditJSONShape(raw string) error {
 	}
 
 	return nil
+}
+
+// pruneUnreliableMatchedDocs removes matched docs that are below the confidence floor or
+// whose doc_ref does not resolve to a retrieved chunk, so a hallucinated or weakly related
+// document cannot become the answer surface.
+func pruneUnreliableMatchedDocs(audit *DocAuditResult, docChunks, genDocChunks []string) []string {
+	if audit == nil || len(audit.MatchedDocs) == 0 {
+		return nil
+	}
+
+	kept := make([]DocMatched, 0, len(audit.MatchedDocs))
+	warnings := make([]string, 0)
+	for _, doc := range audit.MatchedDocs {
+		ref := strings.TrimSpace(doc.DocRef)
+		if ref == "" {
+			warnings = append(warnings, "Discarded a matched document with no doc_ref.")
+			continue
+		}
+		if doc.MatchConfidence < minDocMatchConfidence {
+			warnings = append(warnings, fmt.Sprintf("Discarded weakly matched document %s (confidence %.2f); answering from source code evidence instead.", ref, doc.MatchConfidence))
+			continue
+		}
+		if len(collectSourceBodies(ref, docChunks)) == 0 && len(collectSourceBodies(ref, genDocChunks)) == 0 {
+			warnings = append(warnings, fmt.Sprintf("Discarded matched document %s because it does not correspond to any retrieved documentation chunk.", ref))
+			continue
+		}
+		kept = append(kept, doc)
+	}
+	audit.MatchedDocs = kept
+
+	// Doc-relative findings are meaningless once every matched doc is gone.
+	if len(kept) == 0 {
+		audit.MissingFacts = []string{}
+		audit.ConflictingFacts = []string{}
+		audit.StaleFacts = []string{}
+	}
+
+	return warnings
 }
 
 func enforceAuditFactCoverage(req Request, extract DocExtractResult, audit *DocAuditResult, docChunks, genDocChunks []string) []string {
