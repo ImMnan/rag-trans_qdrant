@@ -200,7 +200,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	}
 
 	// 3. Build prompt
-	budgeted := AllocateChunkCharBudget([][]string{changeResult.chunks, codeResult.chunks}, maxContextCharsTotal)
+	budgeted := AllocateChunkCharBudget([][]string{changeResult.chunks, codeResult.chunks}, evidenceOnlyWeights, maxContextCharsTotal)
 	changeChunks, codeChunks := budgeted[0], budgeted[1]
 	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) {
 		p.log.Warn().
@@ -353,13 +353,13 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		p.log.Warn().Err(genDocResult.err).Str("collection", p.genDocCollection).Msg("qdrant query failed")
 	}
 
-	// 3. Share one context budget across every retrieved side.
+	// 3. Share one context budget across every retrieved side, weighted toward source evidence.
 	budgeted := AllocateChunkCharBudget([][]string{
 		changeResult.chunks,
 		codeResult.chunks,
 		docResult.chunks,
 		genDocResult.chunks,
-	}, maxContextCharsTotal)
+	}, docWorkflowWeights, maxContextCharsTotal)
 	changeChunks, codeChunks, docChunks, genDocChunks := budgeted[0], budgeted[1], budgeted[2], budgeted[3]
 	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) ||
 		len(docChunks) < len(docResult.chunks) || len(genDocChunks) < len(genDocResult.chunks) {

@@ -46,12 +46,12 @@ const evidenceGroundingRules = "Evidence grounding:\n" +
 	"- Cite the file path from the [source: ...] label when stating a technical fact.\n"
 
 const docAuthorityRules = "Evidence authority rules:\n" +
-	"- Source code and change evidence is the ground truth for anything within the scope of the Original Query. Existing documentation is a candidate artifact to be verified against it, never the other way round.\n" +
-	"- When documentation and code disagree on a query-scoped point, the code wins: use the code value and explicitly call the documentation outdated.\n" +
-	"- When no documentation matches, or the matched documentation is about a different topic, ignore it entirely and answer from the code evidence. Never bend the answer to fit an unrelated document.\n" +
-	"- Documentation may still supply context the code cannot show (intent, prerequisites, ownership, external systems). Use it for that, and label it as documented rather than verified.\n" +
-	"- Do not use implementation details outside the Original Query to mark documentation stale or conflicting; stay within the query scope.\n" +
-	"- Where the code evidence is genuinely absent or ambiguous, say so in warnings/unknowns instead of inventing a value or silently trusting the documentation.\n"
+	"- Source code and change evidence is the ground truth for anything in scope of the Original Query. Existing documentation is a candidate artifact to verify against it, never the reverse.\n" +
+	"- Where documentation and code disagree in scope, the code wins: use the code value, cite its file path, and call the documentation outdated.\n" +
+	"- Where no documentation matches, or it covers a different topic, ignore it and answer from the code. Never bend the answer to fit an unrelated document.\n" +
+	"- Documentation may still supply what code cannot show (intent, prerequisites, external systems). Use it for that, labelled as documented rather than verified.\n" +
+	"- Keep to the query scope: do not mark documentation stale over implementation details the query never asked about.\n" +
+	"- Where the evidence is absent or ambiguous, put it in warnings instead of inventing a value or silently trusting the documentation.\n"
 
 // buildPrompt assembles the LLM messages from retrieved chunks.
 func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
@@ -248,12 +248,37 @@ func docGenerateSchemaForStatus(status DocDecisionStatus) string {
 // productUserAudienceRules keep generated documentation aimed at whoever uses the product,
 // rather than at an engineer maintaining its source.
 const productUserAudienceRules = "Audience rules:\n" +
-	"- You are writing for the USER of this product, not for an engineer maintaining its source. The Application Profile is the product use case; treat it as who the reader is and what they are trying to accomplish.\n" +
-	"- Source code is your evidence for what the product actually does. It is never the subject of the document. The reader cannot edit it.\n" +
+	"- Write for the USER of this product. The Application Profile says who they are and what they are trying to accomplish.\n" +
+	"- Source code is evidence of what the product does, never the subject of the document. The reader cannot edit it.\n" +
 	"- Write what the reader runs, configures, or deploys: commands, config files, manifests, env vars, flags, ports, endpoints, and how to confirm it worked.\n" +
-	"- Never instruct the reader to modify source code, functions, Dockerfiles, or templates, and never present a patch, diff, or function signature as a step.\n" +
-	"- Do not describe the change history or how a feature was implemented. Describe how to use the feature as it behaves today.\n" +
-	"- Only use values visible in the provided context. If a value the reader needs is not visible, say 'Unknown based on provided context' and record it in warnings rather than inventing it.\n"
+	"- Never tell the reader to modify source, functions, Dockerfiles, or templates, and never present a patch, diff, or function signature as a step.\n" +
+	"- Describe the feature as it behaves today, not its change history or how it was implemented.\n" +
+	"- Use only values visible in the provided context. If one the reader needs is missing, write 'Unknown based on provided context' and note it in warnings.\n"
+
+// docStatusRules returns only the rules that apply to the decided status. The other
+// branches' rules are dead text that competes for the model's attention.
+func docStatusRules(status DocDecisionStatus) string {
+	const instructionRules = "Resolved instructions rules:\n" +
+		"- resolved_instructions is what the reader sees. It must be the FULL set of steps for the Original Query, not a diff or a summary of edits.\n" +
+		"- Take the matched documentation as the baseline, then verify every step against the evidence before including it.\n" +
+		"- Where a documented step is wrong or outdated, replace it with the corrected step and append an inline note '(Corrected: doc said X; source shows Y)'.\n" +
+		"- Record each such fix as one sentence in corrections. If nothing needed correcting, still write the full verified steps and leave corrections empty.\n"
+
+	switch status {
+	case StatusUpdateRequired:
+		return "Update patch rules:\n" +
+			"- changes_markdown is the ready-to-paste Markdown itself, never a description of the edit such as 'Added steps...'.\n" +
+			"- Use the existing documentation as the baseline and write each changed section in full, including its heading.\n" +
+			"- Address every supported item in Audit JSON missing_facts, conflicting_facts, and stale_facts; put unresolved ones in warnings.\n\n" +
+			instructionRules
+	case StatusNewDocumentRequired:
+		return "New document rules:\n" +
+			"- body_markdown is the complete document, covering the required sections in order.\n" +
+			"- title names the task the reader is accomplishing, not the code that implements it.\n"
+	default:
+		return instructionRules
+	}
+}
 
 func buildDocGeneratePrompt(
 	req Request,
@@ -284,9 +309,6 @@ func buildDocGeneratePrompt(
 
 	systemPrompt := "You are a technical writer producing end-user documentation for a product. " +
 		"Your reader is a user or operator of the product described in the Application Profile, never an engineer changing its source. " +
-		"Write steps as concrete actions that reader performs, not as feature descriptions or implementation notes. " +
-		"The Source Code And Change Evidence section is the authoritative truth about how the product behaves: when it contradicts the existing documentation, follow the code and say so. " +
-		"Never copy the angle-bracket placeholders from the output shape into your answer; every field must carry real content derived from the evidence. " +
 		"Your entire response is one JSON object: it begins with { and ends with }, with no surrounding text and no markdown fence. " +
 		"Markdown belongs inside the JSON string values, where line breaks are written as backslash-n."
 
@@ -297,34 +319,18 @@ func buildDocGeneratePrompt(
 			"Content rules:\n"+
 			"1. Steps tell the reader exactly what to run or edit in their own environment.\n"+
 			"2. %s\n"+
-			"3. Inside code blocks, add a short comment only when a value is non-obvious; do not fabricate values not supported by the evidence.\n"+
-			"4. If evidence is insufficient for a full runnable example, list what is unknown in warnings instead of inventing details.\n"+
-			"5. Preserve existing documentation for any use-case detail outside the Original Query or not 100%% clearly changed by code/change evidence.\n"+
-			"6. When no document was matched, write the answer purely from the Source Code And Change Evidence; do not borrow structure or claims from unrelated documentation chunks.\n"+
-			"7. Values that appear in the Source Code And Change Evidence outrank the same value written in the existing documentation; cite the file path when you rely on code evidence.\n"+
-			"8. Every markdown field you populate must be real content. Returning the literal placeholder \"string\", or an empty body for the field required by the decision status, is an invalid answer.\n\n"+
+			"3. Inside code blocks, add a short comment only when a value is non-obvious; never fabricate a value the evidence does not support.\n"+
+			"4. Every field you populate must carry real content. Emitting an angle-bracket placeholder, or leaving the body empty, is an invalid answer.\n\n"+
 			"%s\n"+
 			"%s\n"+
-			"Update patch rules (apply when status is update_required):\n"+
-			"- changes_markdown is the actual ready-to-paste Markdown content for the change, not a description of the change.\n"+
-			"- Never write a summary such as 'Added steps...' or 'Updated the documentation...' in changes_markdown.\n"+"- Use the existing documentation as the baseline and write complete replacement or insertion content for every changed section.\n"+"- Address every item in Audit JSON missing_facts, conflicting_facts, and stale_facts that is supported by the evidence.\n"+"- Also include each requested fact that the audit identifies as missing when it can be established from the extracted facts or source context.\n"+"- For patch_type add_section, changes_markdown must contain the complete new section, including its heading and detailed prose, steps, and code blocks where applicable.\n"+"- For patch_type section_replace, changes_markdown must contain the complete replacement section, including its heading; do not return only a list of changes.\n"+"- Put unsupported or unresolved items in warnings, but still write all supported details into changes_markdown.\n\n"+
-			"Resolved instructions rules (apply when status is update_required or no_changes_required AND a matched doc exists):\n"+
-			"- resolved_instructions is what gets shown to the end user; it must be the FULL set of step-by-step instructions to accomplish the Original Query, not just the diff/patch.\n"+
-			"- Start from the matched existing documentation as the baseline, then verify every step against the Extracted Facts / source evidence before including it.\n"+
-			"- If a documented step, value, or claim conflicts with or is outdated relative to the evidence (see Audit JSON conflicting_facts/stale_facts), do NOT silently reproduce the old text: replace it with the corrected step and add a short inline note such as '(Corrected: doc said X; source shows Y)' right after that step.\n"+
-			"- Also record every such fix as a short sentence in the corrections array, e.g. 'Step 3 previously said X; corrected to Y based on <file>.'\n"+
-			"- If nothing needed correcting, still populate body_markdown with the full verified steps and leave corrections as an empty array.\n"+
-			"- body_markdown must follow the same numbered-step and fenced-code-block requirements as Steps/Validation elsewhere in this prompt.\n\n"+
-			"OUTPUT FORMAT — read carefully, this is the whole response:\n"+
-			"Emit exactly this JSON object and nothing else, with these keys and no others:\n"+
+			"%s\n"+
+			"OUTPUT FORMAT — this is the whole response. Emit exactly this JSON object, with these keys and no others:\n"+
 			"%s\n\n"+
 			"JSON encoding rules:\n"+
-			"- Output starts with { and ends with }. No prose before it, no prose after it, no markdown fence around it.\n"+
-			"- Inside a string value, every line break MUST be written as the two characters backslash-n. Never press Enter inside a string.\n"+
-			"- Inside a string value, every double quote MUST be written as backslash-quote, and every backslash as double-backslash.\n"+
+			"- Start at { and end at }. No prose either side, no markdown fence.\n"+
+			"- Inside a string, write every line break as backslash-n, every double quote as backslash-quote, every backslash as double-backslash. Never press Enter inside a string.\n"+
 			"- Triple-backtick fences are plain characters and need no escaping; write ```bash directly inside the string.\n"+
-			"- No trailing comma before } or ].\n"+
-			"- Do not add keys that are not listed above, and do not omit any that are.\n\n"+
+			"- No trailing comma before } or ].\n\n"+
 			"## Original Query\n%s\n\n"+
 			"## Application Profile (who the reader is and what this product is for)\n%s\n\n"+
 			"## Source Code And Change Evidence (authoritative)\n%s\n\n"+
@@ -340,6 +346,7 @@ func buildDocGeneratePrompt(
 		codeBlockRule,
 		productUserAudienceRules,
 		docAuthorityRules,
+		docStatusRules(decision.Status),
 		docGenerateSchemaForStatus(decision.Status),
 		req.QueryText,
 		appProfileCtx,

@@ -27,53 +27,68 @@ const (
 	// It is a single shared pool rather than a per-side cap: the doc workflow has four sides,
 	// and four independent caps would together exceed the whole model window.
 	maxContextCharsTotal = (defaultModelContextTokens - defaultSafetyTokens - minGenerateOutputTokens - promptOverheadTokens) * charsPerToken
+
+	// Chunk budget weights split the shared pool 70/30 between source evidence and
+	// documentation: code and change chunks are the authority for the answer, while docs
+	// only need enough room to be matched and corrected.
+	evidenceChunkWeight = 0.35 // change + code = 0.70
+	docChunkWeight      = 0.15 // doc + generated doc = 0.30
 )
 
+// evidenceOnlyWeights is the weighting for paths that retrieve change and code only.
+var evidenceOnlyWeights = []float64{evidenceChunkWeight, evidenceChunkWeight}
+
+// docWorkflowWeights orders as change, code, doc, generated doc.
+var docWorkflowWeights = []float64{evidenceChunkWeight, evidenceChunkWeight, docChunkWeight, docChunkWeight}
+
 // AllocateChunkCharBudget distributes one shared character budget across the given chunk
-// sides. Sides that need less than an equal share release the remainder to the others, so
-// an empty side (for example generated docs) does not waste its allowance.
-func AllocateChunkCharBudget(sides [][]string, totalChars int) [][]string {
+// sides in proportion to weights. A side needing less than its share releases the remainder
+// to the others, so an empty or small side (for example generated docs) is not wasted.
+func AllocateChunkCharBudget(sides [][]string, weights []float64, totalChars int) [][]string {
 	out := make([][]string, len(sides))
-	pending := make([]int, 0, len(sides))
+	active := make([]int, 0, len(sides))
 	for i, side := range sides {
-		if len(side) == 0 {
-			out[i] = side
+		out[i] = []string{}
+		if len(side) == 0 || i >= len(weights) || weights[i] <= 0 {
 			continue
 		}
-		pending = append(pending, i)
+		active = append(active, i)
 	}
 
 	remaining := totalChars
-	for len(pending) > 0 {
-		share := remaining / len(pending)
-		if share <= 0 {
-			for _, i := range pending {
-				out[i] = []string{}
-			}
+	for len(active) > 0 && remaining > 0 {
+		totalWeight := 0.0
+		for _, i := range active {
+			totalWeight += weights[i]
+		}
+		if totalWeight <= 0 {
 			break
 		}
 
-		stillPending := pending[:0:0]
+		stillActive := make([]int, 0, len(active))
 		progressed := false
-		for _, i := range pending {
-			if chunksCharSize(sides[i]) > share {
-				stillPending = append(stillPending, i)
+		for _, i := range active {
+			share := int(float64(remaining) * weights[i] / totalWeight)
+			size := chunksCharSize(sides[i])
+			if size <= share {
+				// Fits entirely, so it consumes only what it needs and frees the rest.
+				out[i] = sides[i]
+				remaining -= size
+				progressed = true
 				continue
 			}
-			// Fits entirely, so it only consumes what it needs and frees the rest.
-			out[i] = sides[i]
-			remaining -= chunksCharSize(sides[i])
-			progressed = true
+			stillActive = append(stillActive, i)
 		}
 
 		if !progressed {
-			// Everyone left wants more than an equal share; split what is left evenly.
-			for _, i := range stillPending {
+			// Everyone left wants more than its share; give each exactly its share.
+			for _, i := range stillActive {
+				share := int(float64(remaining) * weights[i] / totalWeight)
 				out[i] = TruncateChunksToCharBudget(sides[i], share)
 			}
 			break
 		}
-		pending = stillPending
+		active = stillActive
 	}
 
 	return out
