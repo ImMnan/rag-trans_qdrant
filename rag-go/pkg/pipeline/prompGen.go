@@ -224,6 +224,27 @@ func buildDocAuditPrompt(req Request, extractedFactsJSON string, docChunks, genD
 	}
 }
 
+// docGenerateSchemaForStatus returns only the branch of the result the decided status
+// uses. Asking for the full three-branch object invites the model into fields it must
+// then leave empty, which is where the encoding usually breaks.
+func docGenerateSchemaForStatus(status DocDecisionStatus) string {
+	const (
+		deltaShape    = `"delta":{"target_doc_ref":"<doc ref>","patch_type":"section_replace|add_section|remove_section|note_fix","changed_sections":["<section name>"],"changes_markdown":"<ready-to-paste markdown>"}`
+		documentShape = `"document":{"doc_kind":"kb_article","title":"<title>","summary":"<one paragraph>","body_markdown":"<full document markdown>","tags":["<tag>"]}`
+		instrShape    = `"resolved_instructions":{"body_markdown":"<full step-by-step markdown>","corrections":["<correction note>"]}`
+		warningsShape = `"warnings":["<warning>"]`
+	)
+
+	switch status {
+	case StatusUpdateRequired:
+		return "{" + deltaShape + "," + instrShape + "," + warningsShape + "}"
+	case StatusNewDocumentRequired:
+		return "{" + documentShape + "," + warningsShape + "}"
+	default:
+		return "{" + instrShape + "," + warningsShape + "}"
+	}
+}
+
 func buildDocGeneratePrompt(
 	req Request,
 	decision DocDecision,
@@ -250,8 +271,9 @@ func buildDocGeneratePrompt(
 	systemPrompt := "You are a technical writer producing user-executable documentation. " +
 		"Write steps as concrete user actions, not feature descriptions. " +
 		"The Source Code And Change Evidence section is the authoritative truth: when it contradicts the existing documentation, follow the code and say so. " +
-		"Never copy the placeholder words from the JSON shape below (\"string\", \"kb_article\") into your answer; every field must carry real content derived from the evidence. " +
-		"Return your result encoded as a single JSON object. Do not wrap the entire response in a markdown fence; markdown inside JSON string fields is allowed and expected."
+		"Never copy the angle-bracket placeholders from the output shape into your answer; every field must carry real content derived from the evidence. " +
+		"Your entire response is one JSON object: it begins with { and ends with }, with no surrounding text and no markdown fence. " +
+		"Markdown belongs inside the JSON string values, where line breaks are written as backslash-n."
 
 	userPrompt := fmt.Sprintf(
 		"Decision status: %s\n"+
@@ -276,18 +298,17 @@ func buildDocGeneratePrompt(
 			"- If a documented step, value, or claim conflicts with or is outdated relative to the evidence (see Audit JSON conflicting_facts/stale_facts), do NOT silently reproduce the old text: replace it with the corrected step and add a short inline note such as '(Corrected: doc said X; source shows Y)' right after that step.\n"+
 			"- Also record every such fix as a short sentence in the corrections array, e.g. 'Step 3 previously said X; corrected to Y based on <file>.'\n"+
 			"- If nothing needed correcting, still populate body_markdown with the full verified steps and leave corrections as an empty array.\n"+
-			"- body_markdown must follow the same numbered-step and fenced-code-block requirements as Steps/Validation elsewhere in this prompt.\n"+
-			"- Leave resolved_instructions.body_markdown empty only when status is new_document_required (the document field already carries the full content) or when no doc was matched at all.\n\n"+
-			"Return a single JSON object with this shape:\n"+
-			"{\"delta\":{\"target_doc_ref\":\"string\",\"patch_type\":\"section_replace|add_section|remove_section|note_fix\",\"changed_sections\":[\"string\"],\"changes_markdown\":\"string\"},"+
-			"\"document\":{\"doc_kind\":\"string\",\"title\":\"string\",\"summary\":\"string\",\"body_markdown\":\"string\",\"tags\":[\"string\"]},"+
-			"\"resolved_instructions\":{\"body_markdown\":\"string\",\"corrections\":[\"string\"]},"+
-			"\"warnings\":[\"string\"]}\n\n"+
+			"- body_markdown must follow the same numbered-step and fenced-code-block requirements as Steps/Validation elsewhere in this prompt.\n\n"+
+			"OUTPUT FORMAT — read carefully, this is the whole response:\n"+
+			"Emit exactly this JSON object and nothing else, with these keys and no others:\n"+
+			"%s\n\n"+
 			"JSON encoding rules:\n"+
-			"- status update_required: populate delta and resolved_instructions; set document to {}.\n"+
-			"- status new_document_required: populate document; set delta and resolved_instructions to {}.\n"+
-			"- status no_changes_required: set delta and document to {}; populate resolved_instructions when a doc was matched, otherwise leave it {}.\n"+
-			"- Newlines inside string values MUST be encoded as \\n. Triple-backtick fences are required in Steps/Validation content for update_required and new_document_required outputs, and in resolved_instructions.body_markdown whenever it is populated.\n\n"+
+			"- Output starts with { and ends with }. No prose before it, no prose after it, no markdown fence around it.\n"+
+			"- Inside a string value, every line break MUST be written as the two characters backslash-n. Never press Enter inside a string.\n"+
+			"- Inside a string value, every double quote MUST be written as backslash-quote, and every backslash as double-backslash.\n"+
+			"- Triple-backtick fences are plain characters and need no escaping; write ```bash directly inside the string.\n"+
+			"- No trailing comma before } or ].\n"+
+			"- Do not add keys that are not listed above, and do not omit any that are.\n\n"+
 			"## Original Query\n%s\n\n"+
 			"## Source Code And Change Evidence (authoritative)\n%s\n\n"+
 			"## Extracted Facts JSON\n%s\n\n"+
@@ -301,6 +322,7 @@ func buildDocGeneratePrompt(
 		profile.Tone,
 		codeBlockRule,
 		docAuthorityRules,
+		docGenerateSchemaForStatus(decision.Status),
 		req.QueryText,
 		evidenceCtx,
 		extractedFactsJSON,

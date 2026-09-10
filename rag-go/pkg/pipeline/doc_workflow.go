@@ -356,7 +356,7 @@ func (p *LLMDocProcessor) runGenerate(
 	docChunks []string,
 	genDocChunks []string,
 ) (DocGenerateResult, error) {
-	schema := `{"delta":{"target_doc_ref":"string","patch_type":"section_replace|add_section|remove_section|note_fix","changed_sections":["string"],"changes_markdown":"string"},"document":{"doc_kind":"kb_article","title":"string","summary":"string","body_markdown":"string","tags":["string"]},"resolved_instructions":{"body_markdown":"string","corrections":["string"]},"warnings":["string"]}`
+	schema := docGenerateSchemaForStatus(decision.Status)
 
 	messages := p.fitGeneratePrompt(req, decision, extractRaw, auditRaw, profile, changeChunks, codeChunks, docChunks, genDocChunks)
 
@@ -459,6 +459,9 @@ func isPlaceholderContent(value string) bool {
 	if trimmed == "" {
 		return true
 	}
+	if strings.HasPrefix(trimmed, "<") && strings.HasSuffix(trimmed, ">") {
+		return true
+	}
 	switch strings.ToLower(trimmed) {
 	case "string", "null", "n/a", "kb_article":
 		return true
@@ -525,7 +528,83 @@ func normalizeJSONObject(raw string) (string, bool) {
 		}
 	}
 
+	// Markdown bodies routinely arrive with real line breaks and trailing commas; fix those
+	// mechanically rather than spending a repair round-trip on them.
+	for _, candidate := range []string{cleaned, raw} {
+		repaired := sanitizeJSONText(candidate)
+		if json.Valid([]byte(repaired)) {
+			return repaired, true
+		}
+		if extracted, ok := extractBalancedJSON(repaired); ok {
+			return extracted, true
+		}
+	}
+
 	return "", false
+}
+
+// sanitizeJSONText escapes control characters that appear literally inside string values
+// and drops trailing commas, without touching anything outside a string.
+func sanitizeJSONText(raw string) string {
+	var b strings.Builder
+	b.Grow(len(raw))
+
+	inString := false
+	escaped := false
+	for i := 0; i < len(raw); i++ {
+		ch := raw[i]
+
+		if inString {
+			switch {
+			case escaped:
+				escaped = false
+				b.WriteByte(ch)
+			case ch == '\\':
+				escaped = true
+				b.WriteByte(ch)
+			case ch == '"':
+				inString = false
+				b.WriteByte(ch)
+			case ch == '\n':
+				b.WriteString(`\n`)
+			case ch == '\r':
+				b.WriteString(`\r`)
+			case ch == '\t':
+				b.WriteString(`\t`)
+			case ch < 0x20:
+				fmt.Fprintf(&b, `\u%04x`, ch)
+			default:
+				b.WriteByte(ch)
+			}
+			continue
+		}
+
+		if ch == '"' {
+			inString = true
+			b.WriteByte(ch)
+			continue
+		}
+		if ch == ',' && nextNonSpaceIsCloser(raw, i+1) {
+			continue
+		}
+		b.WriteByte(ch)
+	}
+
+	return b.String()
+}
+
+func nextNonSpaceIsCloser(raw string, from int) bool {
+	for i := from; i < len(raw); i++ {
+		switch raw[i] {
+		case ' ', '\t', '\n', '\r':
+			continue
+		case '}', ']':
+			return true
+		default:
+			return false
+		}
+	}
+	return false
 }
 
 func stripCodeFence(raw string) string {
