@@ -140,9 +140,10 @@ func ResolveDocStepTokenBudget(req Request, stepName string, messages []Message)
 
 	multiplier := 1.0
 	switch stepName {
-	case "extract", "audit":
-		multiplier = 0.6
-	case "generate", "repair":
+	case "triage":
+		// Triage returns indices and short reasons, never prose.
+		multiplier = 0.4
+	case "compose", "repair":
 		// repair has to reproduce the full markdown it is fixing, so it gets the same room.
 		multiplier = 1.0
 	}

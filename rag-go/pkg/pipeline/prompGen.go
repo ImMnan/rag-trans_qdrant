@@ -145,36 +145,6 @@ func buildStandardFormatRepairPrompt(answer string) []Message {
 	}
 }
 
-func buildDocExtractPrompt(req Request, changeChunks, codeChunks []string) []Message {
-	evidenceCtx := joinChunks(mergeEvidenceChunks(changeChunks, codeChunks), "No change or code context found.")
-
-	systemPrompt := "You extract product and implementation facts from code evidence. " +
-		"Use only the provided change/code context. " +
-		"Return strict JSON and do not add markdown fences."
-
-	userPrompt := fmt.Sprintf(
-		"Return JSON with this shape only:\n"+
-			"{\"topic\":string,\"facts\":[{\"fact\":string,\"source\":\"change|code\",\"confidence\":number}],\"unknowns\":[string]}\n\n"+
-			"Rules:\n"+
-			"- Extract factual statements only from evidence and only when they directly answer the Original Query.\n"+
-			"- Ignore adjacent implementation details that are not required to answer the Original Query.\n"+
-			"- If uncertain, list the point under unknowns.\n"+
-			"- If a point is only implied by comments or surrounding code and not 100%% clear from implementation/change evidence, list it under unknowns instead of facts.\n"+
-			"- confidence range must be 0.0 to 1.0.\n"+
-			"- Each evidence chunk below is prefixed with \"[source: change]\" or \"[source: code]\" on its own line; "+
-			"copy that exact label into the fact's source field.\n\n"+
-			"## Original Query\n%s\n\n"+
-			"## Original Answer Type\n%s\n\n"+
-			"## Evidence (Diff/Change Hunks and Source Code, combined)\n%s",
-		req.QueryText, req.Type, evidenceCtx,
-	)
-
-	return []Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: userPrompt},
-	}
-}
-
 // mergeEvidenceChunks squashes change and code chunks into one evidence list,
 // tagging each chunk with its origin so the model can still cite source per fact.
 func mergeEvidenceChunks(changeChunks, codeChunks []string) []string {
@@ -188,63 +158,6 @@ func mergeEvidenceChunks(changeChunks, codeChunks []string) []string {
 	return merged
 }
 
-func buildDocAuditPrompt(req Request, extractedFactsJSON string, docChunks, genDocChunks []string) []Message {
-	docCtx := joinChunks(docChunks, "No documentation context found.")
-	genDocCtx := joinChunks(genDocChunks, "No generated documentation context found.")
-
-	systemPrompt := "You audit existing documentation against extracted code facts. " +
-		"The code facts are the ground truth; your job is to judge the documentation against them, not to defend it. " +
-		"Use only the provided facts and doc context. " +
-		"Return strict JSON and do not add markdown fences."
-
-	userPrompt := fmt.Sprintf(
-		"Return JSON with this shape only:\n"+
-			"{\"matched_docs\":[{\"doc_ref\":string,\"title\":string,\"why_matched\":string,\"match_confidence\":number}],\"missing_facts\":[string],\"conflicting_facts\":[string],\"stale_facts\":[string],\"summary\":string}\n\n"+
-			"Rules:\n"+
-			"- Only match a document that actually covers the subject of the Original Query. A shared keyword, a shared product name, or generic overlap is NOT a match.\n"+
-			"- Returning an empty matched_docs array is the correct answer when nothing genuinely covers the query. Never pad the list with the closest available document.\n"+
-			"- match_confidence range must be 0.0 to 1.0. Score below 0.75 unless the document clearly covers the query topic; anything below that is discarded downstream.\n"+
-			"- Treat the extracted code facts as ground truth for the Original Query. Where a matched document states something different, list it under conflicting_facts or stale_facts rather than accepting the document.\n"+
-			"- List under missing_facts any query-scoped code fact the matched documentation does not cover.\n"+
-			"- Do not mark documentation missing, conflicting, or stale for facts outside the Original Query, even if those facts appear in code.\n"+
-			"- Each documentation chunk is prefixed with \"[source: <filename>]\" on its own line. "+
-			"When a chunk matches the query topic, copy that exact filename (e.g. \"docs/gatling.md\") into the doc_ref field. "+
-			"Never invent a doc_ref and never leave it empty when a [source: ...] label is present in the matched chunk.\n\n"+
-			"%s\n"+
-			"## Original Query\n%s\n\n"+
-			"## Extracted Facts JSON (ground truth)\n%s\n\n"+
-			"## Existing Documentation Chunks\n%s\n\n"+
-			"## Existing Generated Documentation Chunks\n%s",
-		docAuthorityRules, req.QueryText, extractedFactsJSON, docCtx, genDocCtx,
-	)
-
-	return []Message{
-		{Role: "system", Content: systemPrompt},
-		{Role: "user", Content: userPrompt},
-	}
-}
-
-// docGenerateSchemaForStatus returns only the branch of the result the decided status
-// uses. Asking for the full three-branch object invites the model into fields it must
-// then leave empty, which is where the encoding usually breaks.
-func docGenerateSchemaForStatus(status DocDecisionStatus) string {
-	const (
-		deltaShape    = `"delta":{"target_doc_ref":"<doc ref>","patch_type":"section_replace|add_section|remove_section|note_fix","changed_sections":["<section name>"],"changes_markdown":"<ready-to-paste markdown>"}`
-		documentShape = `"document":{"doc_kind":"kb_article","title":"<title>","summary":"<one paragraph>","body_markdown":"<full document markdown>","tags":["<tag>"]}`
-		instrShape    = `"resolved_instructions":{"body_markdown":"<full step-by-step markdown>","corrections":["<correction note>"]}`
-		warningsShape = `"warnings":["<warning>"]`
-	)
-
-	switch status {
-	case StatusUpdateRequired:
-		return "{" + deltaShape + "," + instrShape + "," + warningsShape + "}"
-	case StatusNewDocumentRequired:
-		return "{" + documentShape + "," + warningsShape + "}"
-	default:
-		return "{" + instrShape + "," + warningsShape + "}"
-	}
-}
-
 // productUserAudienceRules keep generated documentation aimed at whoever uses the product,
 // rather than at an engineer maintaining its source.
 const productUserAudienceRules = "Audience rules:\n" +
@@ -255,56 +168,76 @@ const productUserAudienceRules = "Audience rules:\n" +
 	"- Describe the feature as it behaves today, not its change history or how it was implemented.\n" +
 	"- Use only values visible in the provided context. If one the reader needs is missing, write 'Unknown based on provided context' and note it in warnings.\n"
 
-// docStatusRules returns only the rules that apply to the decided status. The other
-// branches' rules are dead text that competes for the model's attention.
-func docStatusRules(status DocDecisionStatus) string {
-	const instructionRules = "Resolved instructions rules:\n" +
-		"- resolved_instructions is what the reader sees. It must be the FULL set of steps for the Original Query, not a diff or a summary of edits.\n" +
-		"- Take the matched documentation as the baseline, then verify every step against the evidence before including it.\n" +
-		"- Where a documented step is wrong or outdated, replace it with the corrected step and append an inline note '(Corrected: doc said X; source shows Y)'.\n" +
-		"- Record each such fix as one sentence in corrections. If nothing needed correcting, still write the full verified steps and leave corrections empty.\n"
+// buildDocTriagePrompt asks which retrieved documentation chunks answer the query. It sees
+// documentation only: this step decides relevance and coverage, never correctness.
+func buildDocTriagePrompt(req Request, indexedDocChunks []string) []Message {
+	systemPrompt := "You triage retrieved documentation against a user's question. " +
+		"You decide which chunks are worth keeping and how much of the question they answer. " +
+		"You are not judging whether the documentation is correct, only whether it is on topic and complete. " +
+		"Your entire response is one JSON object beginning with { and ending with }, with no surrounding text and no markdown fence."
 
-	switch status {
-	case StatusUpdateRequired:
-		return "Update patch rules:\n" +
-			"- changes_markdown is the ready-to-paste Markdown itself, never a description of the edit such as 'Added steps...'.\n" +
-			"- Use the existing documentation as the baseline and write each changed section in full, including its heading.\n" +
-			"- Address every supported item in Audit JSON missing_facts, conflicting_facts, and stale_facts; put unresolved ones in warnings.\n\n" +
-			instructionRules
-	case StatusNewDocumentRequired:
-		return "New document rules:\n" +
-			"- body_markdown is the complete document, covering the required sections in order.\n" +
-			"- title names the task the reader is accomplishing, not the code that implements it.\n"
-	default:
-		return instructionRules
+	userPrompt := fmt.Sprintf(
+		"Return exactly this JSON object:\n"+
+			"{\"topic\":\"<topic>\",\"coverage\":\"complete|partial|none\","+
+			"\"relevant_chunks\":[{\"index\":0,\"relevance\":0.0,\"why\":\"<why it is relevant>\"}],"+
+			"\"missing_points\":[\"<part of the question the chunks do not answer>\"],\"reason\":\"<one sentence>\"}\n\n"+
+			"Rules:\n"+
+			"- Each chunk below opens with '[chunk N]'. Reference chunks only by that integer N. Never invent an index or cite a filename.\n"+
+			"- Keep a chunk only if it helps answer this specific question. A shared keyword or product name is not relevance.\n"+
+			"- An empty relevant_chunks array with coverage 'none' is the correct answer when nothing on this list is on topic. Never pad it with the closest available chunk.\n"+
+			"- relevance is 0.0 to 1.0. Score below %.2f for anything you would not want quoted in the answer; those are discarded.\n"+
+			"- coverage 'complete' means the kept chunks answer the whole question, 'partial' means they answer some of it, 'none' means they do not address it.\n"+
+			"- missing_points lists what the question asks but these chunks do not cover. Leave it empty only when coverage is 'complete'.\n"+
+			"- Inside a string, write line breaks as backslash-n. No trailing comma before } or ].\n\n"+
+			"## Question\n%s\n\n"+
+			"## Retrieved Documentation Chunks\n%s",
+		minChunkRelevance, req.QueryText, joinChunks(indexedDocChunks, "No documentation chunks were retrieved."),
+	)
+
+	return []Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
 	}
 }
 
-func buildDocGeneratePrompt(
+// buildDocComposePrompt writes the answer. Source evidence is always present so the model
+// can correct whatever the surviving documentation gets wrong.
+func buildDocComposePrompt(
 	req Request,
-	decision DocDecision,
-	extractedFactsJSON string,
-	auditJSON string,
 	profile DocProfile,
+	triage DocTriageResult,
+	keptDocChunks []string,
 	changeChunks []string,
 	codeChunks []string,
-	docChunks []string,
-	genDocChunks []string,
 ) []Message {
 	evidenceCtx := joinChunks(mergeEvidenceChunks(changeChunks, codeChunks), "No change or code context found.")
-	docCtx := joinChunks(docChunks, "No documentation context found.")
-	genDocCtx := joinChunks(genDocChunks, "No generated documentation context found.")
 	appProfileCtx := "No application profile is configured for this repository."
 	if strings.TrimSpace(req.AppProfile) != "" {
 		appProfileCtx = req.AppProfile
 	}
 
-	codeBlockRule := "In Steps and Validation sections, each actionable step must include at least one triple-backtick fenced code block with the correct language tag (bash, yaml, json, go, etc). The Validation section must end with a fenced bash block containing the exact verification command(s)."
+	codeBlockRule := "Every actionable step carries a triple-backtick fenced code block with the correct language tag (bash, yaml, json, etc), and the Validation section ends with a fenced bash block containing the exact verification command."
 	if isInstructionalRequest(req.QueryText) {
-		codeBlockRule = "For every numbered step that involves a file, option, flag, or command: " +
-			"write the step description, then on the very next line output a triple-backtick fenced code block " +
-			"using the correct language tag (yaml, bash, json, go, etc). " +
-			"The Validation section MUST end with a fenced bash block containing the exact command to verify the result."
+		codeBlockRule = "For every numbered step involving a file, option, flag, or command: write the step, then on the very next line a triple-backtick fenced code block with the correct language tag. The Validation section MUST end with a fenced bash block containing the exact command to verify the result."
+	}
+
+	baselineRules := "Baseline rules (documentation was found for this query):\n" +
+		"- Build the answer on the documentation baseline below, then check every step against the source evidence before you keep it.\n" +
+		"- Where the evidence contradicts a documented step or value, use the evidence and append an inline note '(Corrected: doc said X; source shows Y)' to that step.\n" +
+		"- Record each such fix as one sentence in corrections. Leave corrections empty only if nothing needed changing.\n" +
+		"- Fill any gap listed under Gaps To Close from the source evidence; if the evidence cannot close it, say so in warnings.\n"
+	docBaselineCtx := joinChunks(keptDocChunks, "")
+	if len(keptDocChunks) == 0 {
+		baselineRules = "Fresh document rules (no documentation covers this query):\n" +
+			"- Write the answer entirely from the source evidence below.\n" +
+			"- corrections stays empty: there is no existing documentation to correct.\n" +
+			"- Do not speculate beyond the evidence; put anything you cannot establish in warnings.\n"
+		docBaselineCtx = "No relevant documentation exists for this query."
+	}
+
+	gaps := "None recorded."
+	if len(triage.MissingPoints) > 0 {
+		gaps = "- " + strings.Join(triage.MissingPoints, "\n- ")
 	}
 
 	systemPrompt := "You are a technical writer producing end-user documentation for a product. " +
@@ -313,32 +246,31 @@ func buildDocGeneratePrompt(
 		"Markdown belongs inside the JSON string values, where line breaks are written as backslash-n."
 
 	userPrompt := fmt.Sprintf(
-		"Decision status: %s\n"+
+		"Documentation coverage of this query: %s\n"+
 			"Doc profile kind: %s | Required sections: %s\n"+
 			"Audience: %s | Tone: %s\n\n"+
 			"Content rules:\n"+
-			"1. Steps tell the reader exactly what to run or edit in their own environment.\n"+
+			"1. body_markdown is the complete answer the reader follows, covering the required sections in order.\n"+
 			"2. %s\n"+
-			"3. Inside code blocks, add a short comment only when a value is non-obvious; never fabricate a value the evidence does not support.\n"+
-			"4. Every field you populate must carry real content. Emitting an angle-bracket placeholder, or leaving the body empty, is an invalid answer.\n\n"+
+			"3. Add a comment inside a code block only when a value is non-obvious; never fabricate a value the evidence does not support.\n"+
+			"4. title names the task the reader is accomplishing, not the code that implements it.\n"+
+			"5. Every field you populate must carry real content. An angle-bracket placeholder or an empty body is an invalid answer.\n\n"+
 			"%s\n"+
 			"%s\n"+
 			"%s\n"+
 			"OUTPUT FORMAT — this is the whole response. Emit exactly this JSON object, with these keys and no others:\n"+
-			"%s\n\n"+
+			"{\"title\":\"<title>\",\"body_markdown\":\"<full markdown>\",\"corrections\":[\"<correction note>\"],\"warnings\":[\"<warning>\"]}\n\n"+
 			"JSON encoding rules:\n"+
 			"- Start at { and end at }. No prose either side, no markdown fence.\n"+
 			"- Inside a string, write every line break as backslash-n, every double quote as backslash-quote, every backslash as double-backslash. Never press Enter inside a string.\n"+
 			"- Triple-backtick fences are plain characters and need no escaping; write ```bash directly inside the string.\n"+
 			"- No trailing comma before } or ].\n\n"+
-			"## Original Query\n%s\n\n"+
+			"## Question\n%s\n\n"+
 			"## Application Profile (who the reader is and what this product is for)\n%s\n\n"+
+			"## Gaps To Close\n%s\n\n"+
 			"## Source Code And Change Evidence (authoritative)\n%s\n\n"+
-			"## Extracted Facts JSON\n%s\n\n"+
-			"## Audit JSON\n%s\n\n"+
-			"## Existing Documentation Chunks\n%s\n\n"+
-			"## Existing Generated Documentation Chunks\n%s",
-		decision.Status,
+			"## Documentation Baseline (already filtered to the relevant chunks)\n%s",
+		triage.Coverage,
 		profile.Kind,
 		strings.Join(profile.RequiredSections, ", "),
 		profile.Audience,
@@ -346,15 +278,12 @@ func buildDocGeneratePrompt(
 		codeBlockRule,
 		productUserAudienceRules,
 		docAuthorityRules,
-		docStatusRules(decision.Status),
-		docGenerateSchemaForStatus(decision.Status),
+		baselineRules,
 		req.QueryText,
 		appProfileCtx,
+		gaps,
 		evidenceCtx,
-		extractedFactsJSON,
-		auditJSON,
-		docCtx,
-		genDocCtx,
+		docBaselineCtx,
 	)
 
 	return []Message{
