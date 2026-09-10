@@ -35,7 +35,7 @@ func defaultDocProfile() DocProfile {
 			"Notes",
 		},
 		Tone:     "technical and concise",
-		Audience: "support and engineering",
+		Audience: "users and operators of this product",
 	}
 }
 

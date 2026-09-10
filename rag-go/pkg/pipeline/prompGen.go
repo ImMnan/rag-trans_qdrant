@@ -245,6 +245,16 @@ func docGenerateSchemaForStatus(status DocDecisionStatus) string {
 	}
 }
 
+// productUserAudienceRules keep generated documentation aimed at whoever uses the product,
+// rather than at an engineer maintaining its source.
+const productUserAudienceRules = "Audience rules:\n" +
+	"- You are writing for the USER of this product, not for an engineer maintaining its source. The Application Profile is the product use case; treat it as who the reader is and what they are trying to accomplish.\n" +
+	"- Source code is your evidence for what the product actually does. It is never the subject of the document. The reader cannot edit it.\n" +
+	"- Write what the reader runs, configures, or deploys: commands, config files, manifests, env vars, flags, ports, endpoints, and how to confirm it worked.\n" +
+	"- Never instruct the reader to modify source code, functions, Dockerfiles, or templates, and never present a patch, diff, or function signature as a step.\n" +
+	"- Do not describe the change history or how a feature was implemented. Describe how to use the feature as it behaves today.\n" +
+	"- Only use values visible in the provided context. If a value the reader needs is not visible, say 'Unknown based on provided context' and record it in warnings rather than inventing it.\n"
+
 func buildDocGeneratePrompt(
 	req Request,
 	decision DocDecision,
@@ -259,6 +269,10 @@ func buildDocGeneratePrompt(
 	evidenceCtx := joinChunks(mergeEvidenceChunks(changeChunks, codeChunks), "No change or code context found.")
 	docCtx := joinChunks(docChunks, "No documentation context found.")
 	genDocCtx := joinChunks(genDocChunks, "No generated documentation context found.")
+	appProfileCtx := "No application profile is configured for this repository."
+	if strings.TrimSpace(req.AppProfile) != "" {
+		appProfileCtx = req.AppProfile
+	}
 
 	codeBlockRule := "In Steps and Validation sections, each actionable step must include at least one triple-backtick fenced code block with the correct language tag (bash, yaml, json, go, etc). The Validation section must end with a fenced bash block containing the exact verification command(s)."
 	if isInstructionalRequest(req.QueryText) {
@@ -268,9 +282,10 @@ func buildDocGeneratePrompt(
 			"The Validation section MUST end with a fenced bash block containing the exact command to verify the result."
 	}
 
-	systemPrompt := "You are a technical writer producing user-executable documentation. " +
-		"Write steps as concrete user actions, not feature descriptions. " +
-		"The Source Code And Change Evidence section is the authoritative truth: when it contradicts the existing documentation, follow the code and say so. " +
+	systemPrompt := "You are a technical writer producing end-user documentation for a product. " +
+		"Your reader is a user or operator of the product described in the Application Profile, never an engineer changing its source. " +
+		"Write steps as concrete actions that reader performs, not as feature descriptions or implementation notes. " +
+		"The Source Code And Change Evidence section is the authoritative truth about how the product behaves: when it contradicts the existing documentation, follow the code and say so. " +
 		"Never copy the angle-bracket placeholders from the output shape into your answer; every field must carry real content derived from the evidence. " +
 		"Your entire response is one JSON object: it begins with { and ends with }, with no surrounding text and no markdown fence. " +
 		"Markdown belongs inside the JSON string values, where line breaks are written as backslash-n."
@@ -280,7 +295,7 @@ func buildDocGeneratePrompt(
 			"Doc profile kind: %s | Required sections: %s\n"+
 			"Audience: %s | Tone: %s\n\n"+
 			"Content rules:\n"+
-			"1. Steps tell the user exactly what to run or edit.\n"+
+			"1. Steps tell the reader exactly what to run or edit in their own environment.\n"+
 			"2. %s\n"+
 			"3. Inside code blocks, add a short comment only when a value is non-obvious; do not fabricate values not supported by the evidence.\n"+
 			"4. If evidence is insufficient for a full runnable example, list what is unknown in warnings instead of inventing details.\n"+
@@ -288,6 +303,7 @@ func buildDocGeneratePrompt(
 			"6. When no document was matched, write the answer purely from the Source Code And Change Evidence; do not borrow structure or claims from unrelated documentation chunks.\n"+
 			"7. Values that appear in the Source Code And Change Evidence outrank the same value written in the existing documentation; cite the file path when you rely on code evidence.\n"+
 			"8. Every markdown field you populate must be real content. Returning the literal placeholder \"string\", or an empty body for the field required by the decision status, is an invalid answer.\n\n"+
+			"%s\n"+
 			"%s\n"+
 			"Update patch rules (apply when status is update_required):\n"+
 			"- changes_markdown is the actual ready-to-paste Markdown content for the change, not a description of the change.\n"+
@@ -310,6 +326,7 @@ func buildDocGeneratePrompt(
 			"- No trailing comma before } or ].\n"+
 			"- Do not add keys that are not listed above, and do not omit any that are.\n\n"+
 			"## Original Query\n%s\n\n"+
+			"## Application Profile (who the reader is and what this product is for)\n%s\n\n"+
 			"## Source Code And Change Evidence (authoritative)\n%s\n\n"+
 			"## Extracted Facts JSON\n%s\n\n"+
 			"## Audit JSON\n%s\n\n"+
@@ -321,9 +338,11 @@ func buildDocGeneratePrompt(
 		profile.Audience,
 		profile.Tone,
 		codeBlockRule,
+		productUserAudienceRules,
 		docAuthorityRules,
 		docGenerateSchemaForStatus(decision.Status),
 		req.QueryText,
+		appProfileCtx,
 		evidenceCtx,
 		extractedFactsJSON,
 		auditJSON,

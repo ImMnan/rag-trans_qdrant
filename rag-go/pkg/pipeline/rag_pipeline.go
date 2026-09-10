@@ -83,6 +83,8 @@ type DOCPipeline struct {
 	codeCollection   string
 	docCollection    string
 	genDocCollection string
+	appProfileDir    string
+	appProfileFiles  map[string]string
 	log              zerolog.Logger
 }
 
@@ -117,6 +119,8 @@ func NewDoc(
 	codeCollection string,
 	docCollection string,
 	genDocCollection string,
+	appProfileDir string,
+	appProfileFiles map[string]string,
 ) *DOCPipeline {
 	docProcessor := NewLLMDocProcessor(vllm, NewDefaultDocDecisionEngine())
 
@@ -129,6 +133,8 @@ func NewDoc(
 		codeCollection:   codeCollection,
 		docCollection:    docCollection,
 		genDocCollection: genDocCollection,
+		appProfileDir:    appProfileDir,
+		appProfileFiles:  appProfileFiles,
 		log:              zerolog.Nop(),
 	}
 }
@@ -146,19 +152,7 @@ func (p *DOCPipeline) WithLogger(log zerolog.Logger) *DOCPipeline {
 // Execute runs the full RAG pipeline for a single request.
 func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, error) {
 	if !strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
-		profileFile := ""
-		if p.appProfileFiles != nil {
-			profileFile = p.appProfileFiles[req.RepoID]
-		}
-		profile, err := loadApplicationProfile(p.appProfileDir, profileFile)
-		if err != nil {
-			p.log.Warn().Err(err).Str("repo_id", req.RepoID).Str("profile_file", profileFile).Msg("application profile lookup failed")
-		} else if profile != "" {
-			req.AppProfile = profile
-			p.log.Info().Str("repo_id", req.RepoID).Str("profile_file", profileFile).Msg("application profile loaded for direct answer")
-		} else {
-			p.log.Warn().Str("repo_id", req.RepoID).Str("profile_file", profileFile).Msg("no application profile loaded for direct answer")
-		}
+		req.AppProfile = resolveAppProfile(p.appProfileDir, p.appProfileFiles, req.RepoID, p.log)
 	}
 
 	// 1. Embed the query once
@@ -267,6 +261,27 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	}, nil
 }
 
+// resolveAppProfile loads the product profile for a repo, returning "" when none is configured.
+func resolveAppProfile(dir string, files map[string]string, repoID string, log zerolog.Logger) string {
+	profileFile := ""
+	if files != nil {
+		profileFile = files[repoID]
+	}
+
+	profile, err := loadApplicationProfile(dir, profileFile)
+	if err != nil {
+		log.Warn().Err(err).Str("repo_id", repoID).Str("profile_file", profileFile).Msg("application profile lookup failed")
+		return ""
+	}
+	if profile == "" {
+		log.Warn().Str("repo_id", repoID).Str("profile_file", profileFile).Msg("no application profile loaded")
+		return ""
+	}
+
+	log.Info().Str("repo_id", repoID).Str("profile_file", profileFile).Msg("application profile loaded")
+	return profile
+}
+
 func hashMessages(messages []Message) string {
 	b, err := json.Marshal(messages)
 	if err != nil {
@@ -277,6 +292,8 @@ func hashMessages(messages []Message) string {
 }
 
 func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, error) {
+	req.AppProfile = resolveAppProfile(p.appProfileDir, p.appProfileFiles, req.RepoID, p.log)
+
 	// 1. Embed the query once
 	vector, err := p.embedder.Embed(ctx, req.QueryText)
 	if err != nil {
