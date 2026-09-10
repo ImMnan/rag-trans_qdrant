@@ -194,7 +194,7 @@ func NewLLMDocProcessor(llm VLLMCompleter, engine DocDecisionEngine) *LLMDocProc
 // only the code can tell whether it is stale.
 func (p *LLMDocProcessor) Process(ctx context.Context, req Request, changeChunks, codeChunks, docChunks, genDocChunks []string) (string, error) {
 	profile := defaultDocProfile()
-	indexed := indexDocChunks(docChunks, genDocChunks)
+	indexed := p.fitTriageChunks(req, indexDocChunks(docChunks, genDocChunks))
 
 	triage, triageWarnings, err := p.runTriage(ctx, req, indexed)
 	if err != nil {
@@ -304,6 +304,20 @@ func (p *LLMDocProcessor) runCompose(
 	}
 
 	return DocComposeResult{}, fmt.Errorf("compose step produced unusable content: %w", lastErr)
+}
+
+// fitTriageChunks drops trailing documentation chunks until the triage call has room for its
+// verdicts. Trimming the tail keeps the remaining [chunk N] labels contiguous from zero, so
+// the indices triage returns still address this slice.
+func (p *LLMDocProcessor) fitTriageChunks(req Request, indexed []string) []string {
+	if req.TokenLimit > 0 {
+		return indexed
+	}
+
+	for len(indexed) > 1 && ResolveDocStepTokenBudget(req, "triage", buildDocTriagePrompt(req, indexed)) < minTriageOutputTokens {
+		indexed = indexed[:len(indexed)-1]
+	}
+	return indexed
 }
 
 // fitComposePrompt drops trailing context until the compose call has at least

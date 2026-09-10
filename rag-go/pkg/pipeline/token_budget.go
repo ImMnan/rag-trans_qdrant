@@ -10,11 +10,15 @@ const (
 	minRequestTokenLimit = 64
 	maxRequestTokenLimit = 12288
 
-	// minGenerateOutputTokens is the room the generate step needs to emit a full document
+	// minGenerateOutputTokens is the room the compose step needs to emit a full document
 	// or instruction body. Inputs are trimmed to protect it, otherwise a large retrieved
 	// context starves the output budget down to minAutoBudgetTokens and the model returns
 	// truncated JSON whose markdown fields come back empty after repair.
 	minGenerateOutputTokens = 3072
+
+	// minTriageOutputTokens is the room triage needs. It emits indices and one-line reasons
+	// rather than prose, so it needs far less than compose.
+	minTriageOutputTokens = 1024
 
 	// charsPerToken is the rough ratio used throughout this file.
 	charsPerToken = 4
@@ -28,18 +32,14 @@ const (
 	// and four independent caps would together exceed the whole model window.
 	maxContextCharsTotal = (defaultModelContextTokens - defaultSafetyTokens - minGenerateOutputTokens - promptOverheadTokens) * charsPerToken
 
-	// Chunk budget weights split the shared pool 70/30 between source evidence and
-	// documentation: code and change chunks are the authority for the answer, while docs
-	// only need enough room to be matched and corrected.
-	evidenceChunkWeight = 0.35 // change + code = 0.70
-	docChunkWeight      = 0.15 // doc + generated doc = 0.30
+	// evidenceChunkWeight splits the shared pool evenly between change and code on paths
+	// that put both in a single prompt. The doc workflow instead fits each of its two calls
+	// separately, shedding documentation before source evidence in fitComposePrompt.
+	evidenceChunkWeight = 0.5
 )
 
 // evidenceOnlyWeights is the weighting for paths that retrieve change and code only.
 var evidenceOnlyWeights = []float64{evidenceChunkWeight, evidenceChunkWeight}
-
-// docWorkflowWeights orders as change, code, doc, generated doc.
-var docWorkflowWeights = []float64{evidenceChunkWeight, evidenceChunkWeight, docChunkWeight, docChunkWeight}
 
 // AllocateChunkCharBudget distributes one shared character budget across the given chunk
 // sides in proportion to weights. A side needing less than its share releases the remainder

@@ -353,14 +353,13 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		p.log.Warn().Err(genDocResult.err).Str("collection", p.genDocCollection).Msg("qdrant query failed")
 	}
 
-	// 3. Share one context budget across every retrieved side, weighted toward source evidence.
-	budgeted := AllocateChunkCharBudget([][]string{
-		changeResult.chunks,
-		codeResult.chunks,
-		docResult.chunks,
-		genDocResult.chunks,
-	}, docWorkflowWeights, maxContextCharsTotal)
-	changeChunks, codeChunks, docChunks, genDocChunks := budgeted[0], budgeted[1], budgeted[2], budgeted[3]
+	// 3. Cap each side against the whole pool as a backstop only. The doc workflow splits its
+	// context across two calls (docs go to triage, code goes to compose), so the real fitting
+	// happens per prompt inside the workflow rather than globally here.
+	changeChunks := TruncateChunksToCharBudget(changeResult.chunks, maxContextCharsTotal)
+	codeChunks := TruncateChunksToCharBudget(codeResult.chunks, maxContextCharsTotal)
+	docChunks := TruncateChunksToCharBudget(docResult.chunks, maxContextCharsTotal)
+	genDocChunks := TruncateChunksToCharBudget(genDocResult.chunks, maxContextCharsTotal)
 	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) ||
 		len(docChunks) < len(docResult.chunks) || len(genDocChunks) < len(genDocResult.chunks) {
 		p.log.Warn().
