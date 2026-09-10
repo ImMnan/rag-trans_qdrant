@@ -34,7 +34,7 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("invalid configuration")
 	}
-	orcaVersion := "0.7+"
+	orcaVersion := "1.1+"
 	log.Info().
 		Str("port", cfg.FiberPort).
 		Str("qdrant_host", cfg.QdrantHost).

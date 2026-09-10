@@ -264,6 +264,9 @@ func (p *LLMDocProcessor) runTriage(ctx context.Context, req Request, indexed []
 	return out, warnings, nil
 }
 
+// runCompose asks for a labelled plain-text envelope rather than JSON. The body carries
+// fenced code, quotes, and pasted log lines, and making the model escape all of that inside
+// a JSON string is the single biggest source of unparseable output.
 func (p *LLMDocProcessor) runCompose(
 	ctx context.Context,
 	req Request,
@@ -273,7 +276,6 @@ func (p *LLMDocProcessor) runCompose(
 	changeChunks []string,
 	codeChunks []string,
 ) (DocComposeResult, error) {
-	schema := `{"title":"<title>","body_markdown":"<full markdown>","corrections":["<correction note>"],"warnings":["<warning>"]}`
 	messages := p.fitComposePrompt(req, profile, triage, keptDocChunks, changeChunks, codeChunks)
 
 	var lastErr error
@@ -282,28 +284,87 @@ func (p *LLMDocProcessor) runCompose(
 			messages = append(messages, Message{
 				Role: "user",
 				Content: "Your previous answer was rejected: " + lastErr.Error() + ". " +
-					"Return the same JSON shape again with title and body_markdown carrying the complete, real, " +
-					"step-by-step content drawn from the evidence. Do not echo the angle-bracket placeholders.",
+					"Answer again in the same label format: a TITLE: line, then optional CORRECTION: and WARNING: lines, " +
+					"then a BODY: line followed by the complete markdown document. Do not emit JSON and do not use placeholders.",
 			})
 		}
 
-		raw, err := p.completeAndRepairJSON(ctx, req, "compose", schema, messages)
+		raw, err := p.llm.Complete(ctx, messages, ResolveDocStepTokenBudget(req, "compose", messages))
 		if err != nil {
-			return DocComposeResult{}, err
+			return DocComposeResult{}, fmt.Errorf("vllm compose step: %w", err)
 		}
 
-		var out DocComposeResult
-		if err := json.Unmarshal([]byte(raw), &out); err != nil {
-			return DocComposeResult{}, fmt.Errorf("parse compose result: %w", err)
-		}
-		normalizeCompose(&out)
-
+		out := parseComposeEnvelope(raw)
 		if lastErr = validateComposeResult(out); lastErr == nil {
 			return out, nil
 		}
 	}
 
 	return DocComposeResult{}, fmt.Errorf("compose step produced unusable content: %w", lastErr)
+}
+
+// parseComposeEnvelope reads the TITLE/CORRECTION/WARNING/BODY labels. Everything after the
+// BODY: line is taken verbatim, so the document may contain any character.
+func parseComposeEnvelope(raw string) DocComposeResult {
+	out := DocComposeResult{Corrections: []string{}, Warnings: []string{}}
+
+	lines := strings.Split(strings.ReplaceAll(strings.TrimSpace(raw), "\r\n", "\n"), "\n")
+	body := make([]string, 0, len(lines))
+	inBody := false
+
+	for _, line := range lines {
+		if inBody {
+			body = append(body, line)
+			continue
+		}
+
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case hasLabel(trimmed, "BODY:"):
+			inBody = true
+			if rest := strings.TrimSpace(trimmed[len("BODY:"):]); rest != "" {
+				body = append(body, rest)
+			}
+		case hasLabel(trimmed, "TITLE:"):
+			out.Title = strings.TrimSpace(trimmed[len("TITLE:"):])
+		case hasLabel(trimmed, "CORRECTION:"):
+			if v := strings.TrimSpace(trimmed[len("CORRECTION:"):]); v != "" && !isPlaceholderContent(v) {
+				out.Corrections = append(out.Corrections, v)
+			}
+		case hasLabel(trimmed, "WARNING:"):
+			if v := strings.TrimSpace(trimmed[len("WARNING:"):]); v != "" && !isPlaceholderContent(v) {
+				out.Warnings = append(out.Warnings, v)
+			}
+		case trimmed == "":
+			// Blank lines before BODY: are formatting, not content.
+		default:
+			// Unlabelled prose before BODY: is the model narrating; treat it as the document.
+			inBody = true
+			body = append(body, line)
+		}
+	}
+
+	out.BodyMarkdown = strings.TrimSpace(strings.Join(body, "\n"))
+	if isPlaceholderContent(out.Title) {
+		out.Title = deriveTitle(out.BodyMarkdown)
+	}
+	return out
+}
+
+func hasLabel(line, label string) bool {
+	return len(line) >= len(label) && strings.EqualFold(line[:len(label)], label)
+}
+
+// deriveTitle falls back to the document's first heading or first line.
+func deriveTitle(body string) string {
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "```") {
+			continue
+		}
+		return strings.TrimSpace(strings.TrimLeft(trimmed, "#* "))
+	}
+	return ""
 }
 
 // fitTriageChunks drops trailing documentation chunks until the triage call has room for its
@@ -471,15 +532,6 @@ func normalizeTriage(in *DocTriageResult, chunkCount int) []string {
 	}
 
 	return warnings
-}
-
-func normalizeCompose(in *DocComposeResult) {
-	if in.Corrections == nil {
-		in.Corrections = []string{}
-	}
-	if in.Warnings == nil {
-		in.Warnings = []string{}
-	}
 }
 
 func validateComposeResult(out DocComposeResult) error {

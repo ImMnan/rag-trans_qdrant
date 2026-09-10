@@ -242,8 +242,8 @@ func buildDocComposePrompt(
 
 	systemPrompt := "You are a technical writer producing end-user documentation for a product. " +
 		"Your reader is a user or operator of the product described in the Application Profile, never an engineer changing its source. " +
-		"Your entire response is one JSON object: it begins with { and ends with }, with no surrounding text and no markdown fence. " +
-		"Markdown belongs inside the JSON string values, where line breaks are written as backslash-n."
+		"You reply in the plain-text label format described under OUTPUT FORMAT. " +
+		"Never wrap your reply in JSON and never wrap it in a code fence: the document body is written as ordinary markdown with real line breaks and real quotes."
 
 	userPrompt := fmt.Sprintf(
 		"Documentation coverage of this query: %s\n"+
@@ -254,17 +254,21 @@ func buildDocComposePrompt(
 			"2. %s\n"+
 			"3. Add a comment inside a code block only when a value is non-obvious; never fabricate a value the evidence does not support.\n"+
 			"4. title names the task the reader is accomplishing, not the code that implements it.\n"+
-			"5. Every field you populate must carry real content. An angle-bracket placeholder or an empty body is an invalid answer.\n\n"+
+			"5. Every label you emit must carry real content. An angle-bracket placeholder or an empty body is an invalid answer.\n\n"+
 			"%s\n"+
 			"%s\n"+
 			"%s\n"+
-			"OUTPUT FORMAT — this is the whole response. Emit exactly this JSON object, with these keys and no others:\n"+
-			"{\"title\":\"<title>\",\"body_markdown\":\"<full markdown>\",\"corrections\":[\"<correction note>\"],\"warnings\":[\"<warning>\"]}\n\n"+
-			"JSON encoding rules:\n"+
-			"- Start at { and end at }. No prose either side, no markdown fence.\n"+
-			"- Inside a string, write every line break as backslash-n, every double quote as backslash-quote, every backslash as double-backslash. Never press Enter inside a string.\n"+
-			"- Triple-backtick fences are plain characters and need no escaping; write ```bash directly inside the string.\n"+
-			"- No trailing comma before } or ].\n\n"+
+			"OUTPUT FORMAT — this is the whole response. Plain text with these labels, in this order:\n"+
+			"TITLE: <one line>\n"+
+			"CORRECTION: <one line>   (repeat per correction; omit the label entirely when there are none)\n"+
+			"WARNING: <one line>      (repeat per warning; omit the label entirely when there are none)\n"+
+			"BODY:\n"+
+			"<the full markdown document>\n\n"+
+			"Output rules:\n"+
+			"- TITLE comes first and BODY: comes last. Everything after the BODY: line is the document, so write it exactly as the reader should see it.\n"+
+			"- Write the body as ordinary markdown: real line breaks, real quote characters, triple-backtick fences. Escape nothing and do not emit JSON.\n"+
+			"- Keep each TITLE, CORRECTION, and WARNING on one line. Use no other labels.\n"+
+			"- Quoting a log line, error message, or payload from the question is fine; reproduce it verbatim inside a fenced block.\n\n"+
 			"## Question\n%s\n\n"+
 			"## Application Profile (who the reader is and what this product is for)\n%s\n\n"+
 			"## Gaps To Close\n%s\n\n"+
