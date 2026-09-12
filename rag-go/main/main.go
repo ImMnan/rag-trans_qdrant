@@ -18,6 +18,8 @@ import (
 	"github.com/immnan/rag-trans_qdrant/rag-go/pkg/vllm"
 )
 
+var orcaVersion = "dev"
+
 func main() {
 	// --- Logging ---
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
@@ -34,7 +36,6 @@ func main() {
 	if err != nil {
 		log.Fatal().Err(err).Msg("invalid configuration")
 	}
-	orcaVersion := "1.1+"
 	log.Info().
 		Str("port", cfg.FiberPort).
 		Str("qdrant_host", cfg.QdrantHost).
