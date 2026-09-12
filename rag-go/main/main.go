@@ -18,14 +18,24 @@ import (
 	"github.com/immnan/rag-trans_qdrant/rag-go/pkg/vllm"
 )
 
+var orcaVersion = "dev"
+
 func main() {
 	// --- Logging ---
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
+	// Debug logs are emitted only when LOG_VERBOSE is set; default level is Info.
+	if os.Getenv("LOG_VERBOSE") == "true" {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	} else {
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	}
 	log.Logger = zerolog.New(os.Stdout).With().Timestamp().Str("service", "orca").Logger()
 
 	// --- Config from env ---
-	cfg := loadConfig()
-	orcaVersion := "0.7+"
+	cfg, err := loadConfig()
+	if err != nil {
+		log.Fatal().Err(err).Msg("invalid configuration")
+	}
 	log.Info().
 		Str("port", cfg.FiberPort).
 		Str("qdrant_host", cfg.QdrantHost).
@@ -38,13 +48,13 @@ func main() {
 
 	// --- Clients ---
 	qdrantClient := qdrant.NewClient(cfg.QdrantHost, log.Logger)
-	embedClient := embedder.NewClientFromType(cfg.EmbedClientType, buildHTTPURL(cfg.EmbedHost), log.Logger)
+	embedClient := embedder.NewClientFromType(cfg.EmbedClientType, buildHTTPURL(cfg.EmbedHost), cfg.EmbedTimeout, log.Logger)
 	log.Info().Str("url", buildHTTPURL(cfg.VLLMHost)).Msg("vllm transport: http")
 	vllmClient := vllm.NewHTTPClient(buildHTTPURL(cfg.VLLMHost), cfg.ModelName, cfg.VLLMTimeout, log.Logger)
 
 	// --- Pipeline ---
-	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection, cfg.ChangeDateField)
-	docPipe := pipeline.NewDoc(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection, cfg.DocCollection, cfg.GenDocCollection)
+	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection, cfg.ChangeDateField, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
+	docPipe := pipeline.NewDoc(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection, cfg.DocCollection, cfg.GenDocCollection, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
 
 	// --- Fiber app ---
 	app := fiber.New(fiber.Config{

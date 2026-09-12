@@ -9,7 +9,113 @@ const (
 
 	minRequestTokenLimit = 64
 	maxRequestTokenLimit = 12288
+
+	// minGenerateOutputTokens is the room the compose step needs to emit a full document
+	// or instruction body. Inputs are trimmed to protect it, otherwise a large retrieved
+	// context starves the output budget down to minAutoBudgetTokens and the model returns
+	// truncated JSON whose markdown fields come back empty after repair.
+	minGenerateOutputTokens = 3072
+
+	// minTriageOutputTokens is the room triage needs. It emits indices and one-line reasons
+	// rather than prose, so it needs far less than compose.
+	minTriageOutputTokens = 1024
+
+	// charsPerToken is the rough ratio used throughout this file.
+	charsPerToken = 4
+
+	// promptOverheadTokens reserves room for the fixed prompt rules plus the facts and audit
+	// JSON that sit alongside retrieved chunks in the largest doc-workflow call.
+	promptOverheadTokens = 2000
+
+	// maxContextCharsTotal is the combined budget for every retrieved chunk in one request.
+	// It is a single shared pool rather than a per-side cap: the doc workflow has four sides,
+	// and four independent caps would together exceed the whole model window.
+	maxContextCharsTotal = (defaultModelContextTokens - defaultSafetyTokens - minGenerateOutputTokens - promptOverheadTokens) * charsPerToken
+
+	// evidenceChunkWeight splits the shared pool evenly between change and code on paths
+	// that put both in a single prompt. The doc workflow instead fits each of its two calls
+	// separately, shedding documentation before source evidence in fitComposePrompt.
+	evidenceChunkWeight = 0.5
 )
+
+// evidenceOnlyWeights is the weighting for paths that retrieve change and code only.
+var evidenceOnlyWeights = []float64{evidenceChunkWeight, evidenceChunkWeight}
+
+// AllocateChunkCharBudget distributes one shared character budget across the given chunk
+// sides in proportion to weights. A side needing less than its share releases the remainder
+// to the others, so an empty or small side (for example generated docs) is not wasted.
+func AllocateChunkCharBudget(sides [][]string, weights []float64, totalChars int) [][]string {
+	out := make([][]string, len(sides))
+	active := make([]int, 0, len(sides))
+	for i, side := range sides {
+		out[i] = []string{}
+		if len(side) == 0 || i >= len(weights) || weights[i] <= 0 {
+			continue
+		}
+		active = append(active, i)
+	}
+
+	remaining := totalChars
+	for len(active) > 0 && remaining > 0 {
+		totalWeight := 0.0
+		for _, i := range active {
+			totalWeight += weights[i]
+		}
+		if totalWeight <= 0 {
+			break
+		}
+
+		stillActive := make([]int, 0, len(active))
+		progressed := false
+		for _, i := range active {
+			share := int(float64(remaining) * weights[i] / totalWeight)
+			size := chunksCharSize(sides[i])
+			if size <= share {
+				// Fits entirely, so it consumes only what it needs and frees the rest.
+				out[i] = sides[i]
+				remaining -= size
+				progressed = true
+				continue
+			}
+			stillActive = append(stillActive, i)
+		}
+
+		if !progressed {
+			// Everyone left wants more than its share; give each exactly its share.
+			for _, i := range stillActive {
+				share := int(float64(remaining) * weights[i] / totalWeight)
+				out[i] = TruncateChunksToCharBudget(sides[i], share)
+			}
+			break
+		}
+		active = stillActive
+	}
+
+	return out
+}
+
+func chunksCharSize(chunks []string) int {
+	total := 0
+	for _, c := range chunks {
+		total += len(c) + 4 // + separator overhead
+	}
+	return total
+}
+
+// TruncateChunksToCharBudget keeps chunks, in order, until adding the next one would
+// exceed maxChars; it drops the remainder rather than cutting a chunk mid-content.
+func TruncateChunksToCharBudget(chunks []string, maxChars int) []string {
+	total := 0
+	out := make([]string, 0, len(chunks))
+	for _, c := range chunks {
+		total += len(c) + 4 // + separator overhead
+		if total > maxChars {
+			break
+		}
+		out = append(out, c)
+	}
+	return out
+}
 
 // ResolveTokenBudget returns the output-token budget for a single LLM call.
 // If request token_limit is set, it is treated as a hard override (clamped).
@@ -34,11 +140,11 @@ func ResolveDocStepTokenBudget(req Request, stepName string, messages []Message)
 
 	multiplier := 1.0
 	switch stepName {
-	case "extract", "audit":
-		multiplier = 0.6
-	case "repair":
-		multiplier = 0.45
-	case "generate":
+	case "triage":
+		// Triage returns indices and short reasons, never prose.
+		multiplier = 0.4
+	case "compose", "repair":
+		// repair has to reproduce the full markdown it is fixing, so it gets the same room.
 		multiplier = 1.0
 	}
 

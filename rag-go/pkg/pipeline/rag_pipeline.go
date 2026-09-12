@@ -36,6 +36,7 @@ type Message struct {
 type Request struct {
 	QueryText  string
 	RepoID     string
+	AppProfile string
 	Type       string
 	Limit      int
 	TokenLimit int
@@ -67,6 +68,8 @@ type RAGPipeline struct {
 	changeCollection string
 	codeCollection   string
 	changeDateField  string
+	appProfileDir    string
+	appProfileFiles  map[string]string
 	log              zerolog.Logger
 }
 
@@ -80,6 +83,8 @@ type DOCPipeline struct {
 	codeCollection   string
 	docCollection    string
 	genDocCollection string
+	appProfileDir    string
+	appProfileFiles  map[string]string
 	log              zerolog.Logger
 }
 
@@ -90,6 +95,8 @@ func New(
 	changeCollection string,
 	codeCollection string,
 	changeDateField string,
+	appProfileDir string,
+	appProfileFiles map[string]string,
 ) *RAGPipeline {
 	return &RAGPipeline{
 		qdrant:           qdrant,
@@ -98,6 +105,8 @@ func New(
 		changeCollection: changeCollection,
 		codeCollection:   codeCollection,
 		changeDateField:  changeDateField,
+		appProfileDir:    appProfileDir,
+		appProfileFiles:  appProfileFiles,
 		log:              zerolog.Nop(),
 	}
 }
@@ -110,6 +119,8 @@ func NewDoc(
 	codeCollection string,
 	docCollection string,
 	genDocCollection string,
+	appProfileDir string,
+	appProfileFiles map[string]string,
 ) *DOCPipeline {
 	docProcessor := NewLLMDocProcessor(vllm, NewDefaultDocDecisionEngine())
 
@@ -122,6 +133,8 @@ func NewDoc(
 		codeCollection:   codeCollection,
 		docCollection:    docCollection,
 		genDocCollection: genDocCollection,
+		appProfileDir:    appProfileDir,
+		appProfileFiles:  appProfileFiles,
 		log:              zerolog.Nop(),
 	}
 }
@@ -131,12 +144,17 @@ func (p *RAGPipeline) WithLogger(log zerolog.Logger) *RAGPipeline {
 	return p
 }
 
-type Execution interface {
-	Execute(ctx context.Context, req Request) (*Response, error)
+func (p *DOCPipeline) WithLogger(log zerolog.Logger) *DOCPipeline {
+	p.log = log
+	return p
 }
 
 // Execute runs the full RAG pipeline for a single request.
 func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, error) {
+	if !strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
+		req.AppProfile = resolveAppProfile(p.appProfileDir, p.appProfileFiles, req.RepoID, p.log)
+	}
+
 	// 1. Embed the query once
 	vector, err := p.embedder.Embed(ctx, req.QueryText)
 	if err != nil {
@@ -148,12 +166,6 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		chunks []string
 		err    error
 	}
-	//	var qdrantQuery string
-	//	if req.RepoID != "" {
-	//		qdrantQuery = req.RepoID
-	//	} else {
-	//		qdrantQuery = req.Component
-	//	}
 
 	var wg sync.WaitGroup
 	changeCh := make(chan result, 1)
@@ -188,33 +200,86 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	}
 
 	// 3. Build prompt
-	messages := buildPrompt(req, changeResult.chunks, codeResult.chunks)
+	budgeted := AllocateChunkCharBudget([][]string{changeResult.chunks, codeResult.chunks}, evidenceOnlyWeights, maxContextCharsTotal)
+	changeChunks, codeChunks := budgeted[0], budgeted[1]
+	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) {
+		p.log.Warn().
+			Int("change_chunks_kept", len(changeChunks)).
+			Int("change_chunks_retrieved", len(changeResult.chunks)).
+			Int("code_chunks_kept", len(codeChunks)).
+			Int("code_chunks_retrieved", len(codeResult.chunks)).
+			Msg("truncated retrieved chunks to stay within context budget")
+	}
+	codeChunks, evidenceCounts := annotateCodeChunks(codeChunks)
+	messages := buildPrompt(req, changeChunks, codeChunks)
 	maxTokens := ResolveTokenBudget(req, messages)
 
 	// 4. Call LLM
-	p.log.Debug().
+	p.log.Info().
 		Str("messages_sha256", hashMessages(messages)).
 		Int("message_count", len(messages)).
 		Int("max_tokens", maxTokens).
+		Interface("code_evidence", evidenceCounts).
 		Msg("assembled vllm messages")
 	answer, err := p.vllm.Complete(ctx, messages, maxTokens)
 	if err != nil {
 		return nil, fmt.Errorf("vllm complete: %w", err)
 	}
 
+	// 5. Enforce the section template for standard answers, with one reformat retry.
+	if strings.EqualFold(strings.TrimSpace(req.Type), "standard") && !hasStandardSections(answer) {
+		p.log.Warn().Msg("standard answer missing required sections, attempting reformat")
+		repairPrompt := buildStandardFormatRepairPrompt(answer)
+		repaired, repairErr := p.vllm.Complete(ctx, repairPrompt, ResolveTokenBudget(req, repairPrompt))
+		switch {
+		case repairErr != nil:
+			p.log.Warn().Err(repairErr).Msg("standard answer reformat failed, returning original")
+		case hasStandardSections(repaired):
+			answer = repaired
+		default:
+			p.log.Warn().Msg("standard answer reformat still missing sections, returning original")
+		}
+	}
+
+	sources := map[string]int{
+		"change_chunks_retrieved": len(changeResult.chunks),
+		"code_chunks_retrieved":   len(codeResult.chunks),
+	}
+	for kind, n := range evidenceCounts {
+		sources["code_chunks_"+strings.ReplaceAll(kind, "-", "_")] = n
+	}
+
 	return &Response{
-		Answer: answer,
-		Type:   req.Type,
-		Sources: map[string]int{
-			"change_chunks_retrieved": len(changeResult.chunks),
-			"code_chunks_retrieved":   len(codeResult.chunks),
-		},
+		Answer:  answer,
+		Type:    req.Type,
+		Sources: sources,
 		Meta: ResponseMeta{
 			RepoID:    req.RepoID,
 			Component: req.Component,
 			QueryText: req.QueryText,
 		},
 	}, nil
+}
+
+// resolveAppProfile loads the product profile for a repo, returning "" when none is configured.
+func resolveAppProfile(dir string, files map[string]string, repoID string, log zerolog.Logger) string {
+	profileFile := ""
+	if files != nil {
+		profileFile = files[repoID]
+	}
+
+	profile, err := loadApplicationProfile(dir, profileFile)
+	if err != nil {
+		log.Warn().Err(err).Str("repo_id", repoID).Str("profile_file", profileFile).Msg("application profile lookup failed")
+		return ""
+	}
+	if profile == "" {
+		log.Warn().Str("repo_id", repoID).Str("profile_file", profileFile).Msg("no application profile loaded")
+		return ""
+	}
+
+	log.Info().Str("repo_id", repoID).Str("profile_file", profileFile).Msg("application profile loaded")
+	return profile
 }
 
 func hashMessages(messages []Message) string {
@@ -227,6 +292,8 @@ func hashMessages(messages []Message) string {
 }
 
 func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, error) {
+	req.AppProfile = resolveAppProfile(p.appProfileDir, p.appProfileFiles, req.RepoID, p.log)
+
 	// 1. Embed the query once
 	vector, err := p.embedder.Embed(ctx, req.QueryText)
 	if err != nil {
@@ -286,8 +353,29 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		p.log.Warn().Err(genDocResult.err).Str("collection", p.genDocCollection).Msg("qdrant query failed")
 	}
 
-	// 3. Run strong-confidence doc workflow (extract -> audit -> decide -> generate -> validate)
-	answer, err := p.docProcessor.Process(ctx, req, changeResult.chunks, codeResult.chunks, docResult.chunks, genDocResult.chunks)
+	// 3. Cap each side against the whole pool as a backstop only. The doc workflow splits its
+	// context across two calls (docs go to triage, code goes to compose), so the real fitting
+	// happens per prompt inside the workflow rather than globally here.
+	changeChunks := TruncateChunksToCharBudget(changeResult.chunks, maxContextCharsTotal)
+	codeChunks := TruncateChunksToCharBudget(codeResult.chunks, maxContextCharsTotal)
+	docChunks := TruncateChunksToCharBudget(docResult.chunks, maxContextCharsTotal)
+	genDocChunks := TruncateChunksToCharBudget(genDocResult.chunks, maxContextCharsTotal)
+	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) ||
+		len(docChunks) < len(docResult.chunks) || len(genDocChunks) < len(genDocResult.chunks) {
+		p.log.Warn().
+			Int("change_chunks_kept", len(changeChunks)).
+			Int("change_chunks_retrieved", len(changeResult.chunks)).
+			Int("code_chunks_kept", len(codeChunks)).
+			Int("code_chunks_retrieved", len(codeResult.chunks)).
+			Int("doc_chunks_kept", len(docChunks)).
+			Int("doc_chunks_retrieved", len(docResult.chunks)).
+			Int("gen_doc_chunks_kept", len(genDocChunks)).
+			Int("gen_doc_chunks_retrieved", len(genDocResult.chunks)).
+			Msg("truncated retrieved chunks to stay within context budget")
+	}
+
+	// 4. Run strong-confidence doc workflow (extract -> audit -> decide -> generate -> validate)
+	answer, err := p.docProcessor.Process(ctx, req, changeChunks, codeChunks, docChunks, genDocChunks)
 	if err != nil {
 		return nil, fmt.Errorf("doc workflow: %w", err)
 	}

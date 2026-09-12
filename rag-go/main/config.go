@@ -13,6 +13,7 @@ type config struct {
 	WriteTimeout     time.Duration
 	IdleTimeout      time.Duration
 	VLLMTimeout      time.Duration
+	EmbedTimeout     time.Duration
 	QdrantHost       string // host or host:port
 	VLLMHost         string // host or host:port
 	EmbedClientType  string
@@ -23,11 +24,15 @@ type config struct {
 	CodeCollection   string
 	DocCollection    string
 	GenDocCollection string
+	AppProfileDir    string
+	AppProfileFiles  map[string]string
 }
 
-func loadConfig() config {
-	embedServiceHostFallback := getEnv("EMBED_SERVICE_HOST", "embed-e5-service")
-	embedClientType, embedHost := parseEmbedServiceType(getEnv("EMBED_SERVICE_TYPE", "e5:embed-e5-service"), embedServiceHostFallback)
+func loadConfig() (config, error) {
+	embedClientType, embedHost, err := parseEmbedServiceType(getEnv("EMBED_SERVICE_TYPE", ""))
+	if err != nil {
+		return config{}, err
+	}
 
 	return config{
 		FiberPort:        getEnv("FIBER_PORT", "8080"),
@@ -35,6 +40,7 @@ func loadConfig() config {
 		WriteTimeout:     getEnvDuration("FIBER_WRITE_TIMEOUT", 120*time.Second),
 		IdleTimeout:      getEnvDuration("FIBER_IDLE_TIMEOUT", 60*time.Second),
 		VLLMTimeout:      getEnvDuration("VLLM_TIMEOUT", 120*time.Second),
+		EmbedTimeout:     getEnvDuration("EMBED_TIMEOUT", 60*time.Second),
 		QdrantHost:       normalizeHostPort(getEnv("QDRANT_HOST", "qdrant-service"), 6334),
 		VLLMHost:         normalizeHostPort(getEnv("VLLM_HOST", "qwen-3-service"), 80),
 		EmbedClientType:  embedClientType,
@@ -45,30 +51,36 @@ func loadConfig() config {
 		CodeCollection:   getEnv("CODE_COLLECTION", "code_chunks"),
 		DocCollection:    getEnv("DOC_COLLECTION", "doc_chunks"),
 		GenDocCollection: getEnv("GEN_DOC_COLLECTION", "gen_doc_chunks"),
-	}
+		AppProfileDir:    getEnv("APP_PROFILE_DIR", "/etc/app-prof"),
+		AppProfileFiles: map[string]string{
+			"github.com/Blazemeter/bzm-crane":  "bzm-crane.txt",
+			"github.com/Blazemeter/taurus":     "taurus.txt",
+			"github.com/Blazemeter/helm-crane": "helm-crane.txt",
+			"github.com/Blazemeter/bzm-mcp":    "bzm-mcp.txt",
+			"github.com/Blazemeter/sv-mcp":     "sv-mcp.txt",
+		},
+	}, nil
 }
 
-func parseEmbedServiceType(raw string, fallbackHost string) (string, string) {
+// parseEmbedServiceType requires EMBED_SERVICE_TYPE in "<type>:<host>" format; no default client type.
+func parseEmbedServiceType(raw string) (string, string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return "e5", fallbackHost
+		return "", "", fmt.Errorf("EMBED_SERVICE_TYPE must be set (format: <type>:<host>)")
 	}
 
 	parts := strings.SplitN(raw, ":", 2)
-	if len(parts) == 1 {
-		return strings.TrimSpace(parts[0]), fallbackHost
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("EMBED_SERVICE_TYPE %q must be in format <type>:<host>", raw)
 	}
 
 	clientType := strings.TrimSpace(parts[0])
 	host := strings.TrimSpace(parts[1])
-	if host == "" {
-		host = fallbackHost
-	}
-	if clientType == "" {
-		clientType = "e5"
+	if clientType == "" || host == "" {
+		return "", "", fmt.Errorf("EMBED_SERVICE_TYPE %q must have non-empty type and host", raw)
 	}
 
-	return clientType, host
+	return clientType, host, nil
 }
 
 // normalizeHostPort ensures host:port format, using defaultPort if no port specified.

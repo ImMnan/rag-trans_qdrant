@@ -18,11 +18,11 @@ type GTEQwenClient struct {
 	log        zerolog.Logger
 }
 
-func NewGTEQwenClient(baseURL string, log zerolog.Logger) *GTEQwenClient {
+func NewGTEQwenClient(baseURL string, timeout time.Duration, log zerolog.Logger) *GTEQwenClient {
 	return &GTEQwenClient{
 		baseURL: baseURL,
 		httpClient: &http.Client{
-			Timeout: 30 * time.Second,
+			Timeout: timeout,
 			Transport: &http.Transport{
 				MaxIdleConns:        50,
 				MaxIdleConnsPerHost: 50,
