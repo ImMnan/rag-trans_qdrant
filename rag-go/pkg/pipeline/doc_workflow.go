@@ -344,11 +344,58 @@ func parseComposeEnvelope(raw string) DocComposeResult {
 		}
 	}
 
-	out.BodyMarkdown = strings.TrimSpace(strings.Join(body, "\n"))
+	out.BodyMarkdown = normalizeBodyMarkdown(strings.Join(body, "\n"))
 	if isPlaceholderContent(out.Title) {
 		out.Title = deriveTitle(out.BodyMarkdown)
 	}
 	return out
+}
+
+// normalizeBodyMarkdown removes an accidental outer fence around the complete
+// document so inner code fences remain Markdown fences instead of plain text.
+func normalizeBodyMarkdown(body string) string {
+	trimmed := strings.TrimSpace(strings.ReplaceAll(body, "\r\n", "\n"))
+	lines := strings.Split(trimmed, "\n")
+	if len(lines) < 3 {
+		return trimmed
+	}
+
+	first := strings.TrimSpace(lines[0])
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if last != "```" {
+		return trimmed
+	}
+
+	openingLine := 0
+	if !isMarkdownFence(first) {
+		if len(lines) < 4 {
+			return trimmed
+		}
+		found := false
+		for i := 0; i < len(lines)-2; i++ {
+			if strings.EqualFold(strings.TrimSpace(lines[i]), "BODY:") && isMarkdownFence(strings.TrimSpace(lines[i+1])) {
+				openingLine = i
+				found = true
+				break
+			}
+		}
+		if !found {
+			return trimmed
+		}
+		content := append([]string{}, lines[:openingLine]...)
+		content = append(content, lines[openingLine+2:len(lines)-1]...)
+		return strings.TrimSpace(strings.Join(content, "\n"))
+	}
+
+	return strings.TrimSpace(strings.Join(lines[openingLine+1:len(lines)-1], "\n"))
+}
+
+func isMarkdownFence(line string) bool {
+	if !strings.HasPrefix(line, "```") {
+		return false
+	}
+	language := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(line, "```")))
+	return language == "markdown" || language == "md"
 }
 
 func hasLabel(line, label string) bool {

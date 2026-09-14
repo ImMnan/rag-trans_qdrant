@@ -267,6 +267,7 @@ func buildDocComposePrompt(
 			"Output rules:\n"+
 			"- TITLE comes first and BODY: comes last. Everything after the BODY: line is the document, so write it exactly as the reader should see it.\n"+
 			"- Write the body as ordinary markdown: real line breaks, real quote characters, triple-backtick fences. Escape nothing and do not emit JSON.\n"+
+			"- Markdown boundary example: '1. Define the scenario' and its explanation stay outside a fence; the following YAML starts with ```yaml and ends with ``` on its own line. A heading such as '## Validation' and the sentence before a command stay outside the fence.\n"+
 			"- Keep each TITLE, CORRECTION, and WARNING on one line. Use no other labels.\n"+
 			"- Quoting a log line, error message, or payload from the question is fine; reproduce it verbatim inside a fenced block.\n\n"+
 			"## Question\n%s\n\n"+

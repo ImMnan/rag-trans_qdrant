@@ -32,9 +32,8 @@ build-binary: check-version
 	@echo "Built binary: $(BINARY)"
 
 build-image: check-version
-	docker buildx build \
+	docker build \
 		--platform $(PLATFORM) \
-		--load \
 		-f $(DOCKERFILE) \
 		--build-arg VERSION=$(VERSION) \
 		-t $(IMAGE):$(VERSION) \
