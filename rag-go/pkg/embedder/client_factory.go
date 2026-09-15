@@ -11,6 +11,7 @@ import (
 // EmbeddingClient is the common interface used by the RAG pipeline.
 type EmbeddingClient interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
+	Rerank(ctx context.Context, query string, documents []string) ([]float32, error)
 }
 
 // NewClientFromType picks the embedding client implementation by type.
