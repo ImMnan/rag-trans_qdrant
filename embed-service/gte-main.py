@@ -5,10 +5,12 @@ from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import CrossEncoder, SentenceTransformer
 
 # Load model once at startup
 embed_model = None
+# Reranker is a separate cross-encoder model, independent of the embedding model above.
+reranker_model = None
 query_template = "{text}"
 document_template = "{text}"
 
@@ -38,7 +40,7 @@ def resolve_model_path(model_name: str, hub_cache: Optional[str]) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global embed_model, query_template, document_template
+    global embed_model, reranker_model, query_template, document_template
     model_name = os.getenv("EMBED_MODEL", "Alibaba-NLP/gte-Qwen2-1.5B-instruct")
     hf_home = os.getenv("HF_HOME", "/models")
     hub_cache = os.getenv("HF_HUB_CACHE")
@@ -55,6 +57,15 @@ async def lifespan(app: FastAPI):
         cache_folder=cache_folder,
         local_files_only=True,
     )
+
+    reranker_name = os.getenv("RERANKER_MODEL", "")
+    if reranker_name:
+        reranker_path = resolve_model_path(reranker_name, hub_cache)
+        print(f"Loading reranker model: {reranker_name} using model path: {reranker_path}")
+        reranker_model = CrossEncoder(reranker_path, trust_remote_code=True, local_files_only=True)
+    else:
+        print("RERANKER_MODEL not set, /rerank endpoint will return 503")
+
     yield
     # Shutdown (optional cleanup)
     print("Embedding service shutting down")
@@ -100,6 +111,29 @@ async def embed(request: EmbedRequest) -> EmbedResponse:
         return EmbedResponse(vector=vector)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}")
+
+class RerankRequest(BaseModel):
+    query: str
+    documents: list[str]
+
+class RerankResponse(BaseModel):
+    scores: list[float]
+
+@app.post("/rerank")
+async def rerank(request: RerankRequest) -> RerankResponse:
+    """Score each document's relevance to the query with a cross-encoder."""
+    if reranker_model is None:
+        raise HTTPException(status_code=503, detail="Reranker model not loaded; set RERANKER_MODEL")
+
+    if not request.documents:
+        return RerankResponse(scores=[])
+
+    try:
+        pairs = [[request.query, doc] for doc in request.documents]
+        scores = reranker_model.predict(pairs).tolist()
+        return RerankResponse(scores=scores)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Rerank failed: {str(e)}")
 
 @app.get("/health")
 async def health():
