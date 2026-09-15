@@ -74,7 +74,7 @@ Looking at the ingestion payload and the current retrieval path (`Query`/`QueryS
 - Every query always returns up to `limit` chunks even if the best match is a poor cosine match — irrelevant chunks get shipped to the LLM and consume budget/attention.
 - **Improvement:** add a `ScoreThreshold` (tunable per collection) so low-similarity noise is dropped before it ever competes for the char budget in `AllocateChunkCharBudget`.
 
-## 2. No hybrid (sparse + dense) retrieval
+## 2. No hybrid (sparse + dense) retrieval - LAST
 The payload has no sparse/BM25-friendly field (e.g., no keyword/sparse vector), so retrieval is 100% dense embedding similarity. Dense embeddings are weak on exact identifiers — function names, error codes, env var names, config keys (`VLLM_TIMEOUT`, `EMBED_TIMEOUT`, specific commit SHAs) — which this codebase clearly cares about (per your own memory notes about exact-match filtering like `repo_id`).
 - **Improvement:** add a sparse vector (Qdrant supports named sparse vectors) generated from BM25/SPLADE over `text`, and do a hybrid query (RRF fusion) in Qdrant. This alone often gives the largest retrieval-quality jump for code/config-heavy corpora.
 

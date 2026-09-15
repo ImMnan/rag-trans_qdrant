@@ -40,6 +40,9 @@ func main() {
 		Str("port", cfg.FiberPort).
 		Str("qdrant_host", cfg.QdrantHost).
 		Float32("qdrant_score_threshold", cfg.QdrantScoreThreshold).
+		Bool("qdrant_mmr_enabled", cfg.QdrantMMREnabled).
+		Float32("qdrant_mmr_lambda", cfg.QdrantMMRLambda).
+		Int("qdrant_mmr_overfetch", cfg.QdrantMMROverfetch).
 		Str("vllm_host", cfg.VLLMHost).
 		Str("embed_client_type", cfg.EmbedClientType).
 		Str("embed_host", cfg.EmbedHost).

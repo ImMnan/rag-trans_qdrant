@@ -147,6 +147,7 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 	}
 
 	parsed := make([]parsedHit, 0, len(resp.Result))
+	vectorHits := 0
 	for _, hit := range resp.Result {
 		if hit.Payload == nil {
 			continue
@@ -163,14 +164,18 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 		source := payloadString(hit.Payload, "file_path", "doc_ref")
 		chunkIndex, hasChunkIndex := payloadInt(hit.Payload, "chunk_index")
 
-		parsed = append(parsed, parsedHit{
+		candidate := parsedHit{
 			text:          text,
 			source:        source,
 			chunkIndex:    chunkIndex,
 			hasChunkIndex: hasChunkIndex,
 			score:         hit.Score,
 			vector:        denseVector(hit),
-		})
+		}
+		if len(candidate.vector) > 0 {
+			vectorHits++
+		}
+		parsed = append(parsed, candidate)
 		c.log.Debug().
 			Str("collection", collection).
 			Str("point_id", pointID(hit.Id)).
@@ -179,6 +184,7 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 			Msg("qdrant chunk retrieved")
 	}
 
+	parsedBeforeMMR := len(parsed)
 	if c.mmrEnabled {
 		parsed = selectDiverse(parsed, vector, limit, c.mmrLambda)
 	}
@@ -199,6 +205,13 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 	c.log.Info().
 		Str("collection", collection).
 		Int("hits", len(chunks)).
+		Int("qdrant_candidates", len(resp.Result)).
+		Int("parsed_candidates", parsedBeforeMMR).
+		Int("vector_candidates", vectorHits).
+		Bool("mmr_enabled", c.mmrEnabled).
+		Float32("mmr_lambda", c.mmrLambda).
+		Int("mmr_overfetch", c.mmrOverfetch).
+		Bool("mmr_applied", c.mmrEnabled && parsedBeforeMMR > limit).
 		Float32("score_threshold", c.scoreThreshold).
 		Msg("qdrant query complete")
 
