@@ -37,7 +37,7 @@ spec:
         emptyDir: {}
       containers:
       - name: rag-go-ctr
-        image: immnan/rag-go:0.7.3
+        image: immnan/orca-rag:0.2.0
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8080
@@ -73,6 +73,10 @@ spec:
           value: "380s"
         - name: EMBED_TIMEOUT
           value: "120s"
+        - name: RERANK_ENABLED
+          value: "true"
+        - name: RERANK_OVERFETCH_MULTIPLIER
+          value: "4"
         volumeMounts:
         - name: tmp
           mountPath: /tmp         

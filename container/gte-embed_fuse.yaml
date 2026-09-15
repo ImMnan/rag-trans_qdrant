@@ -76,8 +76,14 @@ spec:
                 cache_dir='/models/hub',
                 local_dir_use_symlinks=False,
             )
+            snapshot_download(
+                'Alibaba-NLP/gte-multilingual-reranker-base',
+                cache_dir='/models/hub',
+                local_dir_use_symlinks=False,
+            )
             PY
             test -d /models/hub/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct
+            test -d /models/hub/models--Alibaba-NLP--gte-multilingual-reranker-base
             ls -la /models/hub | head -n 40
         volumeMounts:
         - name: model-cache
@@ -104,6 +110,9 @@ spec:
           value: "{text}"
         - name: EMBED_DOCUMENT_TEMPLATE
           value: "{text}"
+        # Cross-encoder reranker, resolved from the same model-cache PVC as the embed model.
+        - name: RERANKER_MODEL
+          value: "Alibaba-NLP/gte-multilingual-reranker-base"
         volumeMounts:
         - name: tmp
           mountPath: /tmp
