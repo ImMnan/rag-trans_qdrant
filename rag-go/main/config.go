@@ -23,6 +23,7 @@ type config struct {
 	QdrantMMROverfetch        int
 	RerankEnabled             bool
 	RerankOverfetchMultiplier int
+	ContextTruncationEnabled  bool
 	VLLMHost                  string // host or host:port
 	EmbedClientType           string
 	EmbedHost                 string // host or host:port
@@ -57,6 +58,7 @@ func loadConfig() (config, error) {
 		QdrantMMROverfetch:        getEnvInt("QDRANT_MMR_OVERFETCH", 3),
 		RerankEnabled:             getEnvBool("RERANK_ENABLED", false),
 		RerankOverfetchMultiplier: getEnvInt("RERANK_OVERFETCH_MULTIPLIER", 4),
+		ContextTruncationEnabled:  getEnvBool("CONTEXT_TRUNCATION_ENABLED", true),
 		VLLMHost:                  normalizeHostPort(getEnv("VLLM_HOST", "qwen-3-service"), 80),
 		EmbedClientType:           embedClientType,
 		EmbedHost:                 normalizeHostPort(embedHost, 80),

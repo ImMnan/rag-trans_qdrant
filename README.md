@@ -58,6 +58,12 @@ balance in `QDRANT_MMR_LAMBDA` (`1.0` is relevance-only, `0.0` is
 diversity-only). Set `QDRANT_MMR_ENABLED=false` to preserve the original ranked
 results.
 
+Context-budget truncation is enabled by default. Set
+`CONTEXT_TRUNCATION_ENABLED=false` to pass all retrieved chunks to the prompt;
+this can exceed the model context window. Each response reports
+`meta.context_truncation_enabled` and `meta.context_truncation_active`, where
+the latter is true only when the request actually dropped chunks.
+
 
 ```sh
 curl -X POST "http://orca-infer.ai/api/v1/rag-go/generate-doc" \

@@ -43,6 +43,7 @@ func main() {
 		Bool("qdrant_mmr_enabled", cfg.QdrantMMREnabled).
 		Float32("qdrant_mmr_lambda", cfg.QdrantMMRLambda).
 		Int("qdrant_mmr_overfetch", cfg.QdrantMMROverfetch).
+		Bool("context_truncation_enabled", cfg.ContextTruncationEnabled).
 		Str("vllm_host", cfg.VLLMHost).
 		Str("embed_client_type", cfg.EmbedClientType).
 		Str("embed_host", cfg.EmbedHost).
@@ -57,8 +58,8 @@ func main() {
 	vllmClient := vllm.NewHTTPClient(buildHTTPURL(cfg.VLLMHost), cfg.ModelName, cfg.VLLMTimeout, log.Logger)
 
 	// --- Pipeline ---
-	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, embedClient, cfg.RerankEnabled, cfg.RerankOverfetchMultiplier, cfg.ChangeCollection, cfg.CodeCollection, cfg.ChangeDateField, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
-	docPipe := pipeline.NewDoc(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection, cfg.DocCollection, cfg.GenDocCollection, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
+	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, embedClient, cfg.RerankEnabled, cfg.RerankOverfetchMultiplier, cfg.ContextTruncationEnabled, cfg.ChangeCollection, cfg.CodeCollection, cfg.ChangeDateField, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
+	docPipe := pipeline.NewDoc(qdrantClient, vllmClient, embedClient, cfg.ContextTruncationEnabled, cfg.ChangeCollection, cfg.CodeCollection, cfg.DocCollection, cfg.GenDocCollection, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
 
 	// --- Fiber app ---
 	app := fiber.New(fiber.Config{

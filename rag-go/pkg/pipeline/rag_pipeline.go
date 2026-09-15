@@ -61,9 +61,11 @@ type Response struct {
 }
 
 type ResponseMeta struct {
-	RepoID    string `json:"repo_id"`
-	Component string `json:"component,omitempty"`
-	QueryText string `json:"query_text"`
+	RepoID                   string `json:"repo_id"`
+	Component                string `json:"component,omitempty"`
+	QueryText                string `json:"query_text"`
+	ContextTruncationEnabled bool   `json:"context_truncation_enabled"`
+	ContextTruncationActive  bool   `json:"context_truncation_active"`
 }
 
 // RAGPipeline wires all downstream clients together.
@@ -74,6 +76,7 @@ type RAGPipeline struct {
 	reranker                  Reranker
 	rerankEnabled             bool
 	rerankOverfetchMultiplier int
+	contextTruncationEnabled  bool
 	changeCollection          string
 	codeCollection            string
 	changeDateField           string
@@ -84,17 +87,18 @@ type RAGPipeline struct {
 
 // RAGPipeline wires all downstream clients together.
 type DOCPipeline struct {
-	qdrant           QdrantQuerier
-	vllm             VLLMCompleter
-	embedder         Embedder
-	docProcessor     DocProcessor
-	changeCollection string
-	codeCollection   string
-	docCollection    string
-	genDocCollection string
-	appProfileDir    string
-	appProfileFiles  map[string]string
-	log              zerolog.Logger
+	qdrant                   QdrantQuerier
+	vllm                     VLLMCompleter
+	embedder                 Embedder
+	docProcessor             DocProcessor
+	changeCollection         string
+	codeCollection           string
+	docCollection            string
+	genDocCollection         string
+	contextTruncationEnabled bool
+	appProfileDir            string
+	appProfileFiles          map[string]string
+	log                      zerolog.Logger
 }
 
 func New(
@@ -104,6 +108,7 @@ func New(
 	reranker Reranker,
 	rerankEnabled bool,
 	rerankOverfetchMultiplier int,
+	contextTruncationEnabled bool,
 	changeCollection string,
 	codeCollection string,
 	changeDateField string,
@@ -117,6 +122,7 @@ func New(
 		reranker:                  reranker,
 		rerankEnabled:             rerankEnabled,
 		rerankOverfetchMultiplier: rerankOverfetchMultiplier,
+		contextTruncationEnabled:  contextTruncationEnabled,
 		changeCollection:          changeCollection,
 		codeCollection:            codeCollection,
 		changeDateField:           changeDateField,
@@ -130,6 +136,7 @@ func NewDoc(
 	qdrant QdrantQuerier,
 	vllm VLLMCompleter,
 	embedder Embedder,
+	contextTruncationEnabled bool,
 	changeCollection string,
 	codeCollection string,
 	docCollection string,
@@ -140,17 +147,18 @@ func NewDoc(
 	docProcessor := NewLLMDocProcessor(vllm, NewDefaultDocDecisionEngine())
 
 	return &DOCPipeline{
-		qdrant:           qdrant,
-		vllm:             vllm,
-		embedder:         embedder,
-		docProcessor:     docProcessor,
-		changeCollection: changeCollection,
-		codeCollection:   codeCollection,
-		docCollection:    docCollection,
-		genDocCollection: genDocCollection,
-		appProfileDir:    appProfileDir,
-		appProfileFiles:  appProfileFiles,
-		log:              zerolog.Nop(),
+		qdrant:                   qdrant,
+		vllm:                     vllm,
+		embedder:                 embedder,
+		docProcessor:             docProcessor,
+		changeCollection:         changeCollection,
+		codeCollection:           codeCollection,
+		docCollection:            docCollection,
+		genDocCollection:         genDocCollection,
+		contextTruncationEnabled: contextTruncationEnabled,
+		appProfileDir:            appProfileDir,
+		appProfileFiles:          appProfileFiles,
+		log:                      zerolog.Nop(),
 	}
 }
 
@@ -235,8 +243,12 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	// 4. Build prompt
 	changeChunks := changeResult.chunks
 	codeBudget := maxContextCharsTotal - chunksCharSize(changeChunks)
-	codeChunks := TruncateChunksToCharBudget(codeResult.chunks, codeBudget)
-	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) {
+	codeChunks := codeResult.chunks
+	if p.contextTruncationEnabled {
+		codeChunks = TruncateChunksToCharBudget(codeResult.chunks, codeBudget)
+	}
+	contextTruncationActive := len(codeChunks) < len(codeResult.chunks)
+	if contextTruncationActive {
 		p.log.Warn().
 			Int("change_chunks_kept", len(changeChunks)).
 			Int("change_chunks_retrieved", len(changeResult.chunks)).
@@ -288,9 +300,11 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		Type:    req.Type,
 		Sources: sources,
 		Meta: ResponseMeta{
-			RepoID:    req.RepoID,
-			Component: req.Component,
-			QueryText: req.QueryText,
+			RepoID:                   req.RepoID,
+			Component:                req.Component,
+			QueryText:                req.QueryText,
+			ContextTruncationEnabled: p.contextTruncationEnabled,
+			ContextTruncationActive:  contextTruncationActive,
 		},
 	}, nil
 }
@@ -391,11 +405,17 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	// splits its context across two calls, and compose fitting preserves change evidence
 	// while shedding documentation and code context around it.
 	changeChunks := changeResult.chunks
-	codeChunks := TruncateChunksToCharBudget(codeResult.chunks, maxContextCharsTotal-chunksCharSize(changeChunks))
-	docChunks := TruncateChunksToCharBudget(docResult.chunks, maxContextCharsTotal)
-	genDocChunks := TruncateChunksToCharBudget(genDocResult.chunks, maxContextCharsTotal)
-	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) ||
-		len(docChunks) < len(docResult.chunks) || len(genDocChunks) < len(genDocResult.chunks) {
+	codeChunks := codeResult.chunks
+	docChunks := docResult.chunks
+	genDocChunks := genDocResult.chunks
+	if p.contextTruncationEnabled {
+		codeChunks = TruncateChunksToCharBudget(codeResult.chunks, maxContextCharsTotal-chunksCharSize(changeChunks))
+		docChunks = TruncateChunksToCharBudget(docResult.chunks, maxContextCharsTotal)
+		genDocChunks = TruncateChunksToCharBudget(genDocResult.chunks, maxContextCharsTotal)
+	}
+	contextTruncationActive := len(codeChunks) < len(codeResult.chunks) ||
+		len(docChunks) < len(docResult.chunks) || len(genDocChunks) < len(genDocResult.chunks)
+	if contextTruncationActive {
 		p.log.Warn().
 			Int("change_chunks_kept", len(changeChunks)).
 			Int("change_chunks_retrieved", len(changeResult.chunks)).
@@ -421,6 +441,13 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 			"code_chunks_retrieved":    len(codeResult.chunks),
 			"doc_chunks_retrieved":     len(docResult.chunks),
 			"gen_doc_chunks_retrieved": len(genDocResult.chunks),
+		},
+		Meta: ResponseMeta{
+			RepoID:                   req.RepoID,
+			Component:                req.Component,
+			QueryText:                req.QueryText,
+			ContextTruncationEnabled: p.contextTruncationEnabled,
+			ContextTruncationActive:  contextTruncationActive,
 		},
 	}, nil
 }

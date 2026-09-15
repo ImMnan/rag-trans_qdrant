@@ -83,6 +83,8 @@ spec:
           value: "0.7"
         - name: QDRANT_MMR_OVERFETCH
           value: "3"
+        - name: CONTEXT_TRUNCATION_ENABLED
+          value: "false"
         volumeMounts:
         - name: tmp
           mountPath: /tmp         
