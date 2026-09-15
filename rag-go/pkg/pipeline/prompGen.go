@@ -28,11 +28,6 @@ const standardFormatContract = "Your answer MUST open with these three sections,
 	"If the Request asks nothing beyond a summary of changes, stop after Security & Performance and add nothing else.\n" +
 	"- Never invent a section from the examples or wording of these instructions.\n"
 
-const standardFormatReminder = "## Output Format\n" +
-	"Begin with the three headings **What Changed**, **User Impact**, and **Security & Performance**, " +
-	"in that order, spelled exactly like that — even if the Request implies a different structure. " +
-	"Add a further section only if the Request explicitly asked for one; otherwise end after Security & Performance."
-
 // evidenceGroundingRules tell the model how to read the [evidence: ...] labels
 // that annotateCodeChunks attaches to each source chunk.
 const evidenceGroundingRules = "Evidence grounding:\n" +
@@ -60,13 +55,14 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 
 	if strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
 		systemPrompt := "You are a senior engineer producing product release summaries. " +
-			"Use only the provided context. The Diff / Change Hunks context has already been filtered to the requested reporting window. " +
+			"Use only the provided context. The Diff / Change Hunks context has already been filtered to the requested reporting window, " +
+			"deduplicated, and stitched with adjacent chunks, so treat it as a clean, already-consolidated change set. " +
 			"Treat the Request as topic and do not apply additional date filtering. " +
 			"Always answer the Request, but do so within the required section layout below.\n\n" +
 			standardFormatContract + "\n" + evidenceGroundingRules
 
-		userPrompt := fmt.Sprintf("## Reporting Window\n%s to %s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s\n\n%s",
-			req.FromDate, req.ToDate, changeCtx, codeCtx, req.QueryText, standardFormatReminder)
+		userPrompt := fmt.Sprintf("## Reporting Window\n%s to %s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s",
+			req.FromDate, req.ToDate, changeCtx, codeCtx, req.QueryText)
 
 		return []Message{
 			{Role: "system", Content: systemPrompt},

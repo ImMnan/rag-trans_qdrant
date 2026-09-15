@@ -78,7 +78,7 @@ Looking at the ingestion payload and the current retrieval path (`Query`/`QueryS
 The payload has no sparse/BM25-friendly field (e.g., no keyword/sparse vector), so retrieval is 100% dense embedding similarity. Dense embeddings are weak on exact identifiers — function names, error codes, env var names, config keys (`VLLM_TIMEOUT`, `EMBED_TIMEOUT`, specific commit SHAs) — which this codebase clearly cares about (per your own memory notes about exact-match filtering like `repo_id`).
 - **Improvement:** add a sparse vector (Qdrant supports named sparse vectors) generated from BM25/SPLADE over `text`, and do a hybrid query (RRF fusion) in Qdrant. This alone often gives the largest retrieval-quality jump for code/config-heavy corpora.
 
-## 3. No cross-encoder reranking - DONE
+## 3. No cross-encoder reranking - DONE - NOT used, need GPU
 Right now the top-K from Qdrant is used as-is. Bi-encoder similarity is good for recall, poor for precision at the top.
 - **Improvement:** retrieve a larger candidate pool (e.g., `limit*4`) then rerank with a cross-encoder (or even use the LLM itself for cheap listwise reranking) before truncating to the final chunks that go into the prompt. This is usually the single highest-ROI change for RAG accuracy.
 
@@ -90,7 +90,7 @@ You store `chunk_index` per file but retrieval treats each chunk as an independe
 If a file was chunked densely, multiple near-duplicate chunks from the same `file_path` can dominate all `limit` slots, crowding out other relevant files/components.
 - **Improvement:** apply Maximal Marginal Relevance (MMR) or simple "cap N chunks per `file_path`" diversity logic post-retrieval.
 
-## 6. `date`/`month`/`date_short` are underused
+## 6. `date`/`month`/`date_short` are underused - DONE
 These exist for `QueryStandard`'s date-range filter, but nothing does recency-boosting for the default (non-"standard") path. For a repo where change history and code evolve, an old vs. new answer can matter.
 - **Improvement:** for non-standard queries, consider a mild recency boost (e.g., combine similarity score with a decayed function of `date`) rather than a hard filter, so more recent commits/docs are favored without being mandatory.
 
@@ -98,7 +98,7 @@ These exist for `QueryStandard`'s date-range filter, but nothing does recency-bo
 `component` is used as an exact-match `must` filter, all-or-nothing. If it's wrong/missing at query time, retrieval silently returns 0 relevant results from that component, or if omitted, mixes everything.
 - **Improvement:** consider `should` (boost) instead of `must` when the caller is uncertain, or fall back to unfiltered retrieval when a `must` component filter returns too few hits.
 
-## 8. No query expansion / rewriting
+## 8. No query expansion / rewriting 
 A single embed of the raw user query is used for both collections. Char-for-char the same vector is reused for change/code/doc collections which have very different content styles (diffs vs. source vs. prose).
 - **Improvement:** generate collection-specific query variants (e.g., an LLM-rewritten "code-search style" query for the code collection vs. the raw NL query for docs) — this is a well-known technique (HyDE / query rewriting) that improves cross-domain recall.
 
