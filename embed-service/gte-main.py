@@ -135,6 +135,44 @@ async def rerank(request: RerankRequest) -> RerankResponse:
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Rerank failed: {str(e)}")
 
+class OpenAIEmbeddingsRequest(BaseModel):
+    model: str = ""
+    input: str | list[str]
+
+class OpenAIEmbeddingDatum(BaseModel):
+    object: str = "embedding"
+    index: int
+    embedding: list[float]
+
+class OpenAIEmbeddingsResponse(BaseModel):
+    object: str = "list"
+    data: list[OpenAIEmbeddingDatum]
+    model: str
+
+@app.post("/v1/embeddings")
+async def openai_embeddings(request: OpenAIEmbeddingsRequest) -> OpenAIEmbeddingsResponse:
+    """OpenAI-compatible batch embeddings endpoint, so ingestion scripts written against a
+    vLLM/OpenAI embeddings server (e.g. ingest_repo_vllm.py) can point at this service
+    unmodified. Always embeds as documents — this endpoint has no query-time caller."""
+    if embed_model is None:
+        raise HTTPException(status_code=503, detail="Embedding model not loaded yet")
+
+    texts = [request.input] if isinstance(request.input, str) else request.input
+    texts = [t for t in texts if t and t.strip()]
+    if not texts:
+        raise HTTPException(status_code=400, detail="input cannot be empty")
+
+    try:
+        formatted = [format_embedding_input(t, "document") for t in texts]
+        vectors = await run_in_threadpool(embed_model.encode, formatted, normalize_embeddings=True)
+        data = [
+            OpenAIEmbeddingDatum(index=i, embedding=vector.tolist())
+            for i, vector in enumerate(vectors)
+        ]
+        return OpenAIEmbeddingsResponse(data=data, model=request.model)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}")
+
 @app.get("/health")
 async def health():
     """Health check endpoint."""

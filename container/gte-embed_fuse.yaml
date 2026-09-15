@@ -47,6 +47,15 @@ spec:
     spec:
       serviceAccountName: rag-gateway-ksa
       automountServiceAccountToken: true
+      # To run on GPU: uncomment nodeSelector/tolerations below AND the nvidia.com/gpu limit
+      # further down. Left commented, this pod schedules on ordinary CPU/mem nodes as-is;
+      # torch auto-detects CUDA, so no other change is needed once a GPU is actually attached.
+      # nodeSelector:
+      #   cloud.google.com/gke-accelerator: nvidia-l4
+      # tolerations:
+      # - key: nvidia.com/gpu
+      #   operator: Exists
+      #   effect: NoSchedule
       volumes:
       - name: tmp
         emptyDir: {}
@@ -139,6 +148,7 @@ spec:
           limits:
             cpu: "2"
             memory: 14Gi
+            # nvidia.com/gpu: "1"  # uncomment (with nodeSelector/tolerations above) to run on GPU
 
 ---
 apiVersion: v1
