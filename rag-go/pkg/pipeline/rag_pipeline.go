@@ -16,6 +16,7 @@ import (
 type QdrantQuerier interface {
 	Query(ctx context.Context, collection string, vector []float32, repoID, component string, limit int) ([]string, error)
 	QueryStandard(ctx context.Context, collection string, vector []float32, repoID, component string, limit int, fromDate, toDate, dateField string) ([]string, error)
+	QueryStandardAll(ctx context.Context, collection string, repoID, component string, fromDate, toDate, dateField string) ([]string, error)
 }
 
 type VLLMCompleter interface {
@@ -165,7 +166,8 @@ func (p *DOCPipeline) WithLogger(log zerolog.Logger) *DOCPipeline {
 
 // Execute runs the full RAG pipeline for a single request.
 func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, error) {
-	if !strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
+	isStandard := strings.EqualFold(strings.TrimSpace(req.Type), "standard")
+	if !isStandard {
 		req.AppProfile = resolveAppProfile(p.appProfileDir, p.appProfileFiles, req.RepoID, p.log)
 	}
 
@@ -195,8 +197,8 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		defer wg.Done()
 		var chunks []string
 		var err error
-		if strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
-			chunks, err = p.qdrant.QueryStandard(ctx, p.changeCollection, vector, req.RepoID, req.Component, queryLimit, req.FromDate, req.ToDate, p.changeDateField)
+		if isStandard {
+			chunks, err = p.qdrant.QueryStandardAll(ctx, p.changeCollection, req.RepoID, req.Component, req.FromDate, req.ToDate, p.changeDateField)
 		} else {
 			chunks, err = p.qdrant.Query(ctx, p.changeCollection, vector, req.RepoID, req.Component, queryLimit)
 		}
@@ -224,13 +226,16 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 
 	// 3. Rerank each side's candidate pool down to req.Limit with the cross-encoder.
 	if p.rerankEnabled {
-		changeResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, changeResult.chunks, req.Limit, p.log)
+		if !isStandard {
+			changeResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, changeResult.chunks, req.Limit, p.log)
+		}
 		codeResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, codeResult.chunks, req.Limit, p.log)
 	}
 
 	// 4. Build prompt
-	budgeted := AllocateChunkCharBudget([][]string{changeResult.chunks, codeResult.chunks}, evidenceOnlyWeights, maxContextCharsTotal)
-	changeChunks, codeChunks := budgeted[0], budgeted[1]
+	changeChunks := changeResult.chunks
+	codeBudget := maxContextCharsTotal - chunksCharSize(changeChunks)
+	codeChunks := TruncateChunksToCharBudget(codeResult.chunks, codeBudget)
 	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) {
 		p.log.Warn().
 			Int("change_chunks_kept", len(changeChunks)).
@@ -256,7 +261,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	}
 
 	// 5. Enforce the section template for standard answers, with one reformat retry.
-	if strings.EqualFold(strings.TrimSpace(req.Type), "standard") && !hasStandardSections(answer) {
+	if isStandard && !hasStandardSections(answer) {
 		p.log.Warn().Msg("standard answer missing required sections, attempting reformat")
 		repairPrompt := buildStandardFormatRepairPrompt(answer)
 		repaired, repairErr := p.vllm.Complete(ctx, repairPrompt, ResolveTokenBudget(req, repairPrompt))
@@ -382,11 +387,11 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		p.log.Warn().Err(genDocResult.err).Str("collection", p.genDocCollection).Msg("qdrant query failed")
 	}
 
-	// 3. Cap each side against the whole pool as a backstop only. The doc workflow splits its
-	// context across two calls (docs go to triage, code goes to compose), so the real fitting
-	// happens per prompt inside the workflow rather than globally here.
-	changeChunks := TruncateChunksToCharBudget(changeResult.chunks, maxContextCharsTotal)
-	codeChunks := TruncateChunksToCharBudget(codeResult.chunks, maxContextCharsTotal)
+	// 3. Cap non-change sides against the whole pool as a backstop only. The doc workflow
+	// splits its context across two calls, and compose fitting preserves change evidence
+	// while shedding documentation and code context around it.
+	changeChunks := changeResult.chunks
+	codeChunks := TruncateChunksToCharBudget(codeResult.chunks, maxContextCharsTotal-chunksCharSize(changeChunks))
 	docChunks := TruncateChunksToCharBudget(docResult.chunks, maxContextCharsTotal)
 	genDocChunks := TruncateChunksToCharBudget(genDocResult.chunks, maxContextCharsTotal)
 	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) ||

@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	retryDelay = 120 * time.Second
-	maxRetries = 2
+	retryDelay         = 120 * time.Second
+	maxRetries         = 2
+	standardScrollPage = 256
 )
 
 // Client wraps the Qdrant gRPC client.
@@ -84,6 +85,81 @@ func (c *Client) Query(ctx context.Context, collection string, vector []float32,
 
 // QueryStandard filters only change history by its inclusive date window.
 func (c *Client) QueryStandard(ctx context.Context, collection string, vector []float32, repoID, component string, limit int, fromDate, toDate, dateField string) ([]string, error) {
+	dateFilters, err := standardDateFilters(fromDate, toDate, dateField)
+	if err != nil {
+		return nil, err
+	}
+
+	return c.query(ctx, collection, vector, repoID, component, limit, dateFilters[0].condition)
+}
+
+// QueryStandardAll retrieves every change chunk in the requested inclusive date window.
+// Standard answers compare the full change window against vector-ranked code chunks, so
+// change chunks must not be reduced by query top-K, MMR, reranking, or score thresholds.
+func (c *Client) QueryStandardAll(ctx context.Context, collection string, repoID, component string, fromDate, toDate, dateField string) ([]string, error) {
+	if c.points == nil {
+		return nil, fmt.Errorf("qdrant client not initialised")
+	}
+
+	dateFilters, err := standardDateFilters(fromDate, toDate, dateField)
+	if err != nil {
+		return nil, err
+	}
+
+	var chunks []string
+	seen := make(map[string]struct{})
+	for _, dateFilter := range dateFilters {
+		must := filterConditions(repoID, component, dateFilter.condition)
+		req := &qdrant.ScrollPoints{
+			CollectionName: collection,
+			Filter:         &qdrant.Filter{Must: must},
+			Limit:          qdrant.PtrOf(uint32(standardScrollPage)),
+			WithPayload:    qdrant.NewWithPayload(true),
+		}
+
+		for {
+			resp, err := c.points.Scroll(ctx, req)
+			if err != nil {
+				return nil, fmt.Errorf("qdrant standard scroll %s using %s: %w", collection, dateFilter.field, err)
+			}
+
+			for _, point := range resp.Result {
+				text := pointPayloadText(point)
+				if text == "" {
+					continue
+				}
+				key := pointPayloadKey(point, text)
+				if _, exists := seen[key]; exists {
+					continue
+				}
+				seen[key] = struct{}{}
+				chunks = append(chunks, text)
+			}
+
+			req.Offset = resp.GetNextPageOffset()
+			if req.Offset == nil {
+				break
+			}
+		}
+	}
+
+	c.log.Info().
+		Str("collection", collection).
+		Int("hits", len(chunks)).
+		Str("from_date", fromDate).
+		Str("to_date", toDate).
+		Str("date_field", effectiveDateField(dateField)).
+		Msg("qdrant standard change scroll complete")
+
+	return chunks, nil
+}
+
+type standardDateFilter struct {
+	field     string
+	condition *qdrant.Condition
+}
+
+func standardDateFilters(fromDate, toDate, dateField string) ([]standardDateFilter, error) {
 	from, err := time.Parse("2006-01-02", fromDate)
 	if err != nil {
 		return nil, fmt.Errorf("invalid from_date %q: %w", fromDate, err)
@@ -95,30 +171,75 @@ func (c *Client) QueryStandard(ctx context.Context, collection string, vector []
 	if from.After(to) {
 		return nil, fmt.Errorf("from_date %q is after to_date %q", fromDate, toDate)
 	}
-	if dateField == "" {
-		dateField = "date"
-	}
 
-	return c.query(ctx, collection, vector, repoID, component, limit, qdrant.NewDatetimeRange(dateField, &qdrant.DatetimeRange{
-		Gte: timestamppb.New(from.UTC()),
-		Lte: timestamppb.New(to.UTC().Add(24*time.Hour - time.Nanosecond)),
-	}))
+	fields := orderedDateFields(dateField)
+	filters := make([]standardDateFilter, 0, len(fields))
+	for _, field := range fields {
+		filters = append(filters, standardDateFilter{field: field, condition: dateConditionForField(field, from, to)})
+	}
+	return filters, nil
+}
+
+func effectiveDateField(dateField string) string {
+	dateField = strings.TrimSpace(dateField)
+	if dateField == "" {
+		return "date"
+	}
+	return dateField
+}
+
+func orderedDateFields(dateField string) []string {
+	fields := []string{effectiveDateField(dateField), "date", "date_short", "month"}
+	seen := make(map[string]struct{}, len(fields))
+	ordered := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if _, exists := seen[field]; exists {
+			continue
+		}
+		seen[field] = struct{}{}
+		ordered = append(ordered, field)
+	}
+	return ordered
+}
+
+func dateConditionForField(field string, from, to time.Time) *qdrant.Condition {
+	switch field {
+	case "date_short":
+		return qdrant.NewMatchKeywords(field, dateShortValues(from, to)...)
+	case "month":
+		return qdrant.NewMatchKeywords(field, monthValues(from, to)...)
+	default:
+		return qdrant.NewDatetimeRange(field, &qdrant.DatetimeRange{
+			Gte: timestamppb.New(from.UTC()),
+			Lte: timestamppb.New(to.UTC().Add(24*time.Hour - time.Nanosecond)),
+		})
+	}
+}
+
+func dateShortValues(from, to time.Time) []string {
+	values := make([]string, 0, int(to.Sub(from).Hours()/24)+1)
+	for day := from; !day.After(to); day = day.AddDate(0, 0, 1) {
+		values = append(values, day.Format("2006-01-02"))
+	}
+	return values
+}
+
+func monthValues(from, to time.Time) []string {
+	month := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.UTC)
+	end := time.Date(to.Year(), to.Month(), 1, 0, 0, 0, 0, time.UTC)
+	values := []string{}
+	for !month.After(end) {
+		values = append(values, month.Format("2006-01"))
+		month = month.AddDate(0, 1, 0)
+	}
+	return values
 }
 
 func (c *Client) query(ctx context.Context, collection string, vector []float32, repoID, component string, limit int, dateCondition *qdrant.Condition) ([]string, error) {
 	if c.points == nil {
 		return nil, fmt.Errorf("qdrant client not initialised")
 	}
-	var must []*qdrant.Condition
-	if repoID != "" {
-		must = []*qdrant.Condition{qdrant.NewMatch("repo_id", repoID)}
-	}
-	if component != "" {
-		must = append(must, qdrant.NewMatch("component", component))
-	}
-	if dateCondition != nil {
-		must = append(must, dateCondition)
-	}
+	must := filterConditions(repoID, component, dateCondition)
 
 	candidateLimit := limit
 	if c.mmrEnabled && candidateLimit > 0 {
@@ -216,6 +337,49 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 		Msg("qdrant query complete")
 
 	return chunks, nil
+}
+
+func filterConditions(repoID, component string, conditions ...*qdrant.Condition) []*qdrant.Condition {
+	var must []*qdrant.Condition
+	if repoID != "" {
+		must = append(must, qdrant.NewMatch("repo_id", repoID))
+	}
+	if component != "" {
+		must = append(must, qdrant.NewMatch("component", component))
+	}
+	for _, condition := range conditions {
+		if condition != nil {
+			must = append(must, condition)
+		}
+	}
+	return must
+}
+
+func pointPayloadText(point *qdrant.RetrievedPoint) string {
+	if point == nil || point.Payload == nil {
+		return ""
+	}
+	text := payloadString(point.Payload, "change_chunk", "chunk_text", "text")
+	if text == "" {
+		return ""
+	}
+	source := payloadString(point.Payload, "file_path", "doc_ref")
+	if source != "" {
+		text = "[source: " + source + "]\n" + text
+	}
+	return text
+}
+
+func pointPayloadKey(point *qdrant.RetrievedPoint, text string) string {
+	if point != nil {
+		if id := pointID(point.Id); id != "" {
+			return id
+		}
+		if point.Payload != nil {
+			return payloadString(point.Payload, "file_path", "doc_ref") + "|" + text
+		}
+	}
+	return text
 }
 
 func pointID(id *qdrant.PointId) string {

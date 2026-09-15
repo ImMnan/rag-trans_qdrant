@@ -429,7 +429,7 @@ func (p *LLMDocProcessor) fitTriageChunks(req Request, indexed []string) []strin
 }
 
 // fitComposePrompt drops trailing context until the compose call has at least
-// minGenerateOutputTokens of room, shedding documentation before source evidence.
+// minGenerateOutputTokens of room, preserving change evidence and trimming code.
 func (p *LLMDocProcessor) fitComposePrompt(
 	req Request,
 	profile DocProfile,
@@ -451,9 +451,7 @@ func (p *LLMDocProcessor) fitComposePrompt(
 		switch {
 		case len(keptDocChunks) > 1:
 			keptDocChunks = keptDocChunks[:len(keptDocChunks)-1]
-		case len(changeChunks) > 1:
-			changeChunks = changeChunks[:len(changeChunks)-1]
-		case len(codeChunks) > 1:
+		case len(codeChunks) > 0:
 			codeChunks = codeChunks[:len(codeChunks)-1]
 		default:
 			return messages
