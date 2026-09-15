@@ -1,24 +1,14 @@
-# ==========================================
-# BUILD STAGE: Compile dependencies
-# ==========================================
-FROM python:3.11-slim AS builder
-
-WORKDIR /build
-
-# Copy requirements and pre-compile wheels (saves space in runtime image)
-COPY requirements.txt .
-RUN pip install --user --no-cache-dir -r requirements.txt
-
-# ==========================================
-# PRODUCTION BASE: Python runtime; CUDA is supplied by the NVIDIA container runtime
-# ==========================================
-FROM python:3.11-slim AS runtime
+# PyTorch's CUDA runtime image supplies a CUDA-enabled torch build. A plain
+# python:3.11-slim image installs a CPU-only torch build through pip.
+FROM pytorch/pytorch:2.4.1-cuda12.4-cudnn9-runtime
 
 # Set execution flags for stability and unbuffered real-time logs
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     HF_HOME="/models" \
     MODEL_DIR="/models" \
+    TRANSFORMERS_CACHE="/tmp/transformers" \
+    HF_MODULES_CACHE="/tmp/hf_modules" \
     TRANSFORMERS_OFFLINE=1 \
     HF_DATASETS_OFFLINE=1 \
     EMBED_MODEL="Alibaba-NLP/gte-Qwen2-1.5B-instruct" \
@@ -28,17 +18,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-# Copy pre-built wheels and packages from builder
-COPY --from=builder /root/.local /root/.local
-
-# Set PATH to use local pip packages
-ENV PATH=/root/.local/bin:$PATH
+# Install application dependencies without replacing the CUDA-enabled torch
+# already provided by the base image.
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the GTE entrypoint and normalize the filename so uvicorn can import it as a module
 COPY gte-main.py ./main.py
 
-# Path reserved for external model mount (for PVC or GCS Fuse)
-RUN mkdir -p /models
+# Model files are mounted at /models; runtime metadata and dynamic modules are writable.
+RUN mkdir -p /models /tmp/transformers /tmp/hf_modules
 
 # Expose internal FastAPI gateway port
 EXPOSE 8000
