@@ -6,6 +6,7 @@ from typing import Optional
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sentence_transformers import CrossEncoder, SentenceTransformer
+from starlette.concurrency import run_in_threadpool
 
 # Load model once at startup
 embed_model = None
@@ -85,11 +86,10 @@ async def embed(request: EmbedRequest) -> EmbedResponse:
     
     try:
         # Match the prefix from original RAG pipeline
-        vector = embed_model.encode(
-            f"query: {request.text}",
-            normalize_embeddings=True
-        ).tolist()
-        return EmbedResponse(vector=vector)
+        vector = await run_in_threadpool(
+            embed_model.encode, f"query: {request.text}", normalize_embeddings=True
+        )
+        return EmbedResponse(vector=vector.tolist())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Embedding failed: {str(e)}")
 
@@ -111,8 +111,8 @@ async def rerank(request: RerankRequest) -> RerankResponse:
 
     try:
         pairs = [[request.query, doc] for doc in request.documents]
-        scores = reranker_model.predict(pairs).tolist()
-        return RerankResponse(scores=scores)
+        scores = await run_in_threadpool(reranker_model.predict, pairs)
+        return RerankResponse(scores=scores.tolist())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Rerank failed: {str(e)}")
 
