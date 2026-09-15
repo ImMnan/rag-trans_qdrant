@@ -73,3 +73,35 @@ func (c *GTEQwenClient) Embed(ctx context.Context, text string) ([]float32, erro
 	c.log.Debug().Str("client_type", "gte-qwen").Int("vector_len", len(result.Vector)).Msg("embedding received")
 	return result.Vector, nil
 }
+
+// Rerank scores each document's relevance to query using the embed service's cross-encoder.
+func (c *GTEQwenClient) Rerank(ctx context.Context, query string, documents []string) ([]float32, error) {
+	body, err := json.Marshal(rerankRequest{Query: query, Documents: documents})
+	if err != nil {
+		return nil, fmt.Errorf("marshal rerank request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/rerank", bytes.NewReader(body))
+	if err != nil {
+		return nil, fmt.Errorf("create rerank request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("rerank request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("rerank service returned %d", resp.StatusCode)
+	}
+
+	var result rerankResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("decode rerank response: %w", err)
+	}
+
+	c.log.Debug().Str("client_type", "gte-qwen").Int("scored", len(result.Scores)).Msg("rerank scores received")
+	return result.Scores, nil
+}
