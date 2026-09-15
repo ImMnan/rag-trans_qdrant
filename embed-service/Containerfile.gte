@@ -10,7 +10,7 @@ COPY requirements.txt .
 RUN pip install --user --no-cache-dir -r requirements.txt
 
 # ==========================================
-# PRODUCTION BASE: Lean CPU Runtime
+# PRODUCTION BASE: Python runtime; CUDA is supplied by the NVIDIA container runtime
 # ==========================================
 FROM python:3.11-slim AS runtime
 
@@ -22,6 +22,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TRANSFORMERS_OFFLINE=1 \
     HF_DATASETS_OFFLINE=1 \
     EMBED_MODEL="Alibaba-NLP/gte-Qwen2-1.5B-instruct" \
+    EMBED_DEVICE="auto" \
     EMBED_QUERY_TEMPLATE="{text}" \
     EMBED_DOCUMENT_TEMPLATE="{text}"
 

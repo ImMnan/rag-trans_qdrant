@@ -44,9 +44,11 @@ func main() {
 		Float32("qdrant_mmr_lambda", cfg.QdrantMMRLambda).
 		Int("qdrant_mmr_overfetch", cfg.QdrantMMROverfetch).
 		Bool("context_truncation_enabled", cfg.ContextTruncationEnabled).
-		Str("vllm_host", cfg.VLLMHost).
+		Bool("rerank", cfg.RerankEnabled).
+		Int("rerank_overfetch", cfg.RerankOverfetchMultiplier).
 		Str("embed_client_type", cfg.EmbedClientType).
 		Str("embed_host", cfg.EmbedHost).
+		Str("vllm_host", cfg.VLLMHost).
 		Str("Orca version", orcaVersion).
 		Str("maintainer", "https://github.com/ImMnan").
 		Msg("starting Orca service")

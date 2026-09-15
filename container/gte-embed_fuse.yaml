@@ -107,7 +107,7 @@ spec:
           mountPath: /models
       containers:
       - name: gte-embed-ctr
-        image: immnan/gte-embed-py:0.1.0
+        image: immnan/gte-embed-py:0.3.1
         imagePullPolicy: IfNotPresent
         ports:
         - containerPort: 8000
@@ -115,6 +115,8 @@ spec:
         env:
         - name: EMBED_MODEL
           value: "Alibaba-NLP/gte-Qwen2-1.5B-instruct"
+        - name: EMBED_DEVICE
+          value: "cuda"
         - name: HF_HOME
           value: "/models"
         - name: HF_HUB_CACHE
@@ -145,10 +147,11 @@ spec:
           requests:
             cpu: "1"
             memory: 6Gi
+            nvidia.com/gpu: "1"
           limits:
             cpu: "2"
             memory: 14Gi
-            # nvidia.com/gpu: "1"  # uncomment (with nodeSelector/tolerations above) to run on GPU
+            nvidia.com/gpu: "1"  # uncomment (with nodeSelector/tolerations above) to run on GPU
 
 ---
 apiVersion: v1

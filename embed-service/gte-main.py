@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from sentence_transformers import CrossEncoder, SentenceTransformer
 from starlette.concurrency import run_in_threadpool
+import torch
 
 # Load model once at startup
 embed_model = None
@@ -14,6 +15,7 @@ embed_model = None
 reranker_model = None
 query_template = "{text}"
 document_template = "{text}"
+runtime_device = "unknown"
 
 
 def resolve_model_path(model_name: str, hub_cache: Optional[str]) -> str:
@@ -38,16 +40,37 @@ def resolve_model_path(model_name: str, hub_cache: Optional[str]) -> str:
 
     return model_name
 
+
+def resolve_device() -> str:
+    requested = os.getenv("EMBED_DEVICE", "auto").strip().lower()
+    if requested == "auto":
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if requested not in {"cpu", "cuda"}:
+        raise RuntimeError("EMBED_DEVICE must be one of: auto, cpu, cuda")
+    if requested == "cuda" and not torch.cuda.is_available():
+        raise RuntimeError(
+            "EMBED_DEVICE=cuda but torch.cuda.is_available() is false; "
+            "verify the CUDA-enabled image, NVIDIA drivers, and Kubernetes device plugin"
+        )
+    return requested
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global embed_model, reranker_model, query_template, document_template
+    global embed_model, reranker_model, query_template, document_template, runtime_device
     model_name = os.getenv("EMBED_MODEL", "Alibaba-NLP/gte-Qwen2-1.5B-instruct")
     hf_home = os.getenv("HF_HOME", "/models")
     hub_cache = os.getenv("HF_HUB_CACHE")
     cache_folder = os.getenv("TRANSFORMERS_CACHE", hf_home)
     query_template = os.getenv("EMBED_QUERY_TEMPLATE", "{text}")
     document_template = os.getenv("EMBED_DOCUMENT_TEMPLATE", "{text}")
+    runtime_device = resolve_device()
+    cuda_name = torch.cuda.get_device_name(0) if runtime_device == "cuda" else "unavailable"
+    print(
+        f"Selected inference device: {runtime_device}; "
+        f"torch={torch.__version__}; cuda_available={torch.cuda.is_available()}; "
+        f"cuda_version={torch.version.cuda}; gpu={cuda_name}"
+    )
     model_path = resolve_model_path(model_name, hub_cache)
     print(
         f"Loading embedding model: {model_name} using model path: {model_path} "
@@ -57,13 +80,19 @@ async def lifespan(app: FastAPI):
         model_path,
         cache_folder=cache_folder,
         local_files_only=True,
+        device=runtime_device,
     )
 
     reranker_name = os.getenv("RERANKER_MODEL", "")
     if reranker_name:
         reranker_path = resolve_model_path(reranker_name, hub_cache)
         print(f"Loading reranker model: {reranker_name} using model path: {reranker_path}")
-        reranker_model = CrossEncoder(reranker_path, trust_remote_code=True, local_files_only=True)
+        reranker_model = CrossEncoder(
+            reranker_path,
+            trust_remote_code=True,
+            local_files_only=True,
+            device=runtime_device,
+        )
     else:
         print("RERANKER_MODEL not set, /rerank endpoint will return 503")
 
@@ -176,4 +205,11 @@ async def openai_embeddings(request: OpenAIEmbeddingsRequest) -> OpenAIEmbedding
 @app.get("/health")
 async def health():
     """Health check endpoint."""
-    return {"status": "ok", "service": "embedding-service"}
+    return {
+        "status": "ok",
+        "service": "embedding-service",
+        "device": runtime_device,
+        "cuda_available": torch.cuda.is_available(),
+        "cuda_version": torch.version.cuda,
+        "gpu": torch.cuda.get_device_name(0) if torch.cuda.is_available() else None,
+    }
