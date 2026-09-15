@@ -39,6 +39,7 @@ func main() {
 	log.Info().
 		Str("port", cfg.FiberPort).
 		Str("qdrant_host", cfg.QdrantHost).
+		Float32("qdrant_score_threshold", cfg.QdrantScoreThreshold).
 		Str("vllm_host", cfg.VLLMHost).
 		Str("embed_client_type", cfg.EmbedClientType).
 		Str("embed_host", cfg.EmbedHost).
@@ -47,13 +48,13 @@ func main() {
 		Msg("starting Orca service")
 
 	// --- Clients ---
-	qdrantClient := qdrant.NewClient(cfg.QdrantHost, log.Logger)
+	qdrantClient := qdrant.NewClient(cfg.QdrantHost, cfg.QdrantScoreThreshold, cfg.QdrantNeighborStitch, log.Logger)
 	embedClient := embedder.NewClientFromType(cfg.EmbedClientType, buildHTTPURL(cfg.EmbedHost), cfg.EmbedTimeout, log.Logger)
 	log.Info().Str("url", buildHTTPURL(cfg.VLLMHost)).Msg("vllm transport: http")
 	vllmClient := vllm.NewHTTPClient(buildHTTPURL(cfg.VLLMHost), cfg.ModelName, cfg.VLLMTimeout, log.Logger)
 
 	// --- Pipeline ---
-	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection, cfg.ChangeDateField, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
+	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, embedClient, cfg.RerankEnabled, cfg.RerankOverfetchMultiplier, cfg.ChangeCollection, cfg.CodeCollection, cfg.ChangeDateField, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
 	docPipe := pipeline.NewDoc(qdrantClient, vllmClient, embedClient, cfg.ChangeCollection, cfg.CodeCollection, cfg.DocCollection, cfg.GenDocCollection, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
 
 	// --- Fiber app ---

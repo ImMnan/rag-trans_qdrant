@@ -26,6 +26,11 @@ type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
 }
 
+// Reranker scores (query, document) pairs with a cross-encoder, higher is more relevant.
+type Reranker interface {
+	Rerank(ctx context.Context, query string, documents []string) ([]float32, error)
+}
+
 // Message is a minimal chat message passed to the LLM.
 type Message struct {
 	Role    string
@@ -62,15 +67,18 @@ type ResponseMeta struct {
 
 // RAGPipeline wires all downstream clients together.
 type RAGPipeline struct {
-	qdrant           QdrantQuerier
-	vllm             VLLMCompleter
-	embedder         Embedder
-	changeCollection string
-	codeCollection   string
-	changeDateField  string
-	appProfileDir    string
-	appProfileFiles  map[string]string
-	log              zerolog.Logger
+	qdrant                    QdrantQuerier
+	vllm                      VLLMCompleter
+	embedder                  Embedder
+	reranker                  Reranker
+	rerankEnabled             bool
+	rerankOverfetchMultiplier int
+	changeCollection          string
+	codeCollection            string
+	changeDateField           string
+	appProfileDir             string
+	appProfileFiles           map[string]string
+	log                       zerolog.Logger
 }
 
 // RAGPipeline wires all downstream clients together.
@@ -92,6 +100,9 @@ func New(
 	qdrant QdrantQuerier,
 	vllm VLLMCompleter,
 	embedder Embedder,
+	reranker Reranker,
+	rerankEnabled bool,
+	rerankOverfetchMultiplier int,
 	changeCollection string,
 	codeCollection string,
 	changeDateField string,
@@ -99,15 +110,18 @@ func New(
 	appProfileFiles map[string]string,
 ) *RAGPipeline {
 	return &RAGPipeline{
-		qdrant:           qdrant,
-		vllm:             vllm,
-		embedder:         embedder,
-		changeCollection: changeCollection,
-		codeCollection:   codeCollection,
-		changeDateField:  changeDateField,
-		appProfileDir:    appProfileDir,
-		appProfileFiles:  appProfileFiles,
-		log:              zerolog.Nop(),
+		qdrant:                    qdrant,
+		vllm:                      vllm,
+		embedder:                  embedder,
+		reranker:                  reranker,
+		rerankEnabled:             rerankEnabled,
+		rerankOverfetchMultiplier: rerankOverfetchMultiplier,
+		changeCollection:          changeCollection,
+		codeCollection:            codeCollection,
+		changeDateField:           changeDateField,
+		appProfileDir:             appProfileDir,
+		appProfileFiles:           appProfileFiles,
+		log:                       zerolog.Nop(),
 	}
 }
 
@@ -161,7 +175,13 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		return nil, fmt.Errorf("embed: %w", err)
 	}
 
-	// 2. Fan-out: query both the collections concurrently
+	// 2. Fan-out: query both the collections concurrently. When reranking is enabled,
+	// over-fetch a larger candidate pool so the cross-encoder has more to choose from.
+	queryLimit := req.Limit
+	if p.rerankEnabled && p.rerankOverfetchMultiplier > 1 {
+		queryLimit = req.Limit * p.rerankOverfetchMultiplier
+	}
+
 	type result struct {
 		chunks []string
 		err    error
@@ -176,15 +196,15 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		var chunks []string
 		var err error
 		if strings.EqualFold(strings.TrimSpace(req.Type), "standard") {
-			chunks, err = p.qdrant.QueryStandard(ctx, p.changeCollection, vector, req.RepoID, req.Component, req.Limit, req.FromDate, req.ToDate, p.changeDateField)
+			chunks, err = p.qdrant.QueryStandard(ctx, p.changeCollection, vector, req.RepoID, req.Component, queryLimit, req.FromDate, req.ToDate, p.changeDateField)
 		} else {
-			chunks, err = p.qdrant.Query(ctx, p.changeCollection, vector, req.RepoID, req.Component, req.Limit)
+			chunks, err = p.qdrant.Query(ctx, p.changeCollection, vector, req.RepoID, req.Component, queryLimit)
 		}
 		changeCh <- result{chunks, err}
 	}()
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, req.RepoID, req.Component, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, req.RepoID, req.Component, queryLimit)
 		codeCh <- result{chunks, err}
 	}()
 	wg.Wait()
@@ -199,7 +219,16 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		p.log.Warn().Err(codeResult.err).Str("collection", p.codeCollection).Msg("qdrant query failed")
 	}
 
-	// 3. Build prompt
+	retrievedChangeCount := len(changeResult.chunks)
+	retrievedCodeCount := len(codeResult.chunks)
+
+	// 3. Rerank each side's candidate pool down to req.Limit with the cross-encoder.
+	if p.rerankEnabled {
+		changeResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, changeResult.chunks, req.Limit, p.log)
+		codeResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, codeResult.chunks, req.Limit, p.log)
+	}
+
+	// 4. Build prompt
 	budgeted := AllocateChunkCharBudget([][]string{changeResult.chunks, codeResult.chunks}, evidenceOnlyWeights, maxContextCharsTotal)
 	changeChunks, codeChunks := budgeted[0], budgeted[1]
 	if len(changeChunks) < len(changeResult.chunks) || len(codeChunks) < len(codeResult.chunks) {
@@ -242,8 +271,8 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	}
 
 	sources := map[string]int{
-		"change_chunks_retrieved": len(changeResult.chunks),
-		"code_chunks_retrieved":   len(codeResult.chunks),
+		"change_chunks_retrieved": retrievedChangeCount,
+		"code_chunks_retrieved":   retrievedCodeCount,
 	}
 	for kind, n := range evidenceCounts {
 		sources["code_chunks_"+strings.ReplaceAll(kind, "-", "_")] = n
