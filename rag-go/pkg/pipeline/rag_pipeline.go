@@ -87,18 +87,21 @@ type RAGPipeline struct {
 
 // RAGPipeline wires all downstream clients together.
 type DOCPipeline struct {
-	qdrant                   QdrantQuerier
-	vllm                     VLLMCompleter
-	embedder                 Embedder
-	docProcessor             DocProcessor
-	changeCollection         string
-	codeCollection           string
-	docCollection            string
-	genDocCollection         string
-	contextTruncationEnabled bool
-	appProfileDir            string
-	appProfileFiles          map[string]string
-	log                      zerolog.Logger
+	qdrant                    QdrantQuerier
+	vllm                      VLLMCompleter
+	embedder                  Embedder
+	reranker                  Reranker
+	rerankEnabled             bool
+	rerankOverfetchMultiplier int
+	docProcessor              DocProcessor
+	changeCollection          string
+	codeCollection            string
+	docCollection             string
+	genDocCollection          string
+	contextTruncationEnabled  bool
+	appProfileDir             string
+	appProfileFiles           map[string]string
+	log                       zerolog.Logger
 }
 
 func New(
@@ -136,6 +139,9 @@ func NewDoc(
 	qdrant QdrantQuerier,
 	vllm VLLMCompleter,
 	embedder Embedder,
+	reranker Reranker,
+	rerankEnabled bool,
+	rerankOverfetchMultiplier int,
 	contextTruncationEnabled bool,
 	changeCollection string,
 	codeCollection string,
@@ -147,18 +153,21 @@ func NewDoc(
 	docProcessor := NewLLMDocProcessor(vllm, NewDefaultDocDecisionEngine())
 
 	return &DOCPipeline{
-		qdrant:                   qdrant,
-		vllm:                     vllm,
-		embedder:                 embedder,
-		docProcessor:             docProcessor,
-		changeCollection:         changeCollection,
-		codeCollection:           codeCollection,
-		docCollection:            docCollection,
-		genDocCollection:         genDocCollection,
-		contextTruncationEnabled: contextTruncationEnabled,
-		appProfileDir:            appProfileDir,
-		appProfileFiles:          appProfileFiles,
-		log:                      zerolog.Nop(),
+		qdrant:                    qdrant,
+		vllm:                      vllm,
+		embedder:                  embedder,
+		reranker:                  reranker,
+		rerankEnabled:             rerankEnabled,
+		rerankOverfetchMultiplier: rerankOverfetchMultiplier,
+		docProcessor:              docProcessor,
+		changeCollection:          changeCollection,
+		codeCollection:            codeCollection,
+		docCollection:             docCollection,
+		genDocCollection:          genDocCollection,
+		contextTruncationEnabled:  contextTruncationEnabled,
+		appProfileDir:             appProfileDir,
+		appProfileFiles:           appProfileFiles,
+		log:                       zerolog.Nop(),
 	}
 }
 
@@ -349,6 +358,11 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	}
 
 	// 2. Fan-out: query both the collections concurrently
+	queryLimit := req.Limit
+	if p.rerankEnabled && p.rerankOverfetchMultiplier > 1 {
+		queryLimit = req.Limit * p.rerankOverfetchMultiplier
+	}
+
 	type result struct {
 		chunks []string
 		err    error
@@ -362,23 +376,23 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	wg.Add(4)
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.changeCollection, vector, req.RepoID, req.Component, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.changeCollection, vector, req.RepoID, req.Component, queryLimit)
 		changeCh <- result{chunks, err}
 	}()
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, req.RepoID, req.Component, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, req.RepoID, req.Component, queryLimit)
 		codeCh <- result{chunks, err}
 	}()
 
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.docCollection, vector, req.RepoID, req.Component, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.docCollection, vector, req.RepoID, req.Component, queryLimit)
 		docCh <- result{chunks, err}
 	}()
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.genDocCollection, vector, req.RepoID, req.Component, req.Limit)
+		chunks, err := p.qdrant.Query(ctx, p.genDocCollection, vector, req.RepoID, req.Component, queryLimit)
 		genDocCh <- result{chunks, err}
 	}()
 	wg.Wait()
@@ -401,7 +415,21 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		p.log.Warn().Err(genDocResult.err).Str("collection", p.genDocCollection).Msg("qdrant query failed")
 	}
 
-	// 3. Cap non-change sides against the whole pool as a backstop only. The doc workflow
+	retrievedChangeCount := len(changeResult.chunks)
+	retrievedCodeCount := len(codeResult.chunks)
+	retrievedDocCount := len(docResult.chunks)
+	retrievedGenDocCount := len(genDocResult.chunks)
+
+	// 3. Rerank each evidence pool before context budgeting so every source type
+	// contributes its most query-relevant chunks to the document workflow.
+	if p.rerankEnabled {
+		changeResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, changeResult.chunks, req.Limit, p.log)
+		codeResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, codeResult.chunks, req.Limit, p.log)
+		docResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, docResult.chunks, req.Limit, p.log)
+		genDocResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, genDocResult.chunks, req.Limit, p.log)
+	}
+
+	// 4. Cap non-change sides against the whole pool as a backstop only. The doc workflow
 	// splits its context across two calls, and compose fitting preserves change evidence
 	// while shedding documentation and code context around it.
 	changeChunks := changeResult.chunks
@@ -437,10 +465,10 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	return &Response{
 		Answer: answer,
 		Sources: map[string]int{
-			"change_chunks_retrieved":  len(changeResult.chunks),
-			"code_chunks_retrieved":    len(codeResult.chunks),
-			"doc_chunks_retrieved":     len(docResult.chunks),
-			"gen_doc_chunks_retrieved": len(genDocResult.chunks),
+			"change_chunks_retrieved":  retrievedChangeCount,
+			"code_chunks_retrieved":    retrievedCodeCount,
+			"doc_chunks_retrieved":     retrievedDocCount,
+			"gen_doc_chunks_retrieved": retrievedGenDocCount,
 		},
 		Meta: ResponseMeta{
 			RepoID:                   req.RepoID,

@@ -59,7 +59,7 @@ func main() {
 
 	// --- Pipeline ---
 	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, embedClient, cfg.RerankEnabled, cfg.RerankOverfetchMultiplier, cfg.ContextTruncationEnabled, cfg.ChangeCollection, cfg.CodeCollection, cfg.ChangeDateField, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
-	docPipe := pipeline.NewDoc(qdrantClient, vllmClient, embedClient, cfg.ContextTruncationEnabled, cfg.ChangeCollection, cfg.CodeCollection, cfg.DocCollection, cfg.GenDocCollection, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
+	docPipe := pipeline.NewDoc(qdrantClient, vllmClient, embedClient, embedClient, cfg.RerankEnabled, cfg.RerankOverfetchMultiplier, cfg.ContextTruncationEnabled, cfg.ChangeCollection, cfg.CodeCollection, cfg.DocCollection, cfg.GenDocCollection, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
 
 	// --- Fiber app ---
 	app := fiber.New(fiber.Config{
