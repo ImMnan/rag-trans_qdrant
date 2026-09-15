@@ -61,7 +61,10 @@ async def lifespan(app: FastAPI):
     model_name = os.getenv("EMBED_MODEL", "Alibaba-NLP/gte-Qwen2-1.5B-instruct")
     hf_home = os.getenv("HF_HOME", "/models")
     hub_cache = os.getenv("HF_HUB_CACHE")
-    cache_folder = os.getenv("TRANSFORMERS_CACHE", hf_home)
+    # Must match where snapshot_download placed models (hub_cache), not the legacy
+    # TRANSFORMERS_CACHE var, or trust_remote_code lookups (e.g. Alibaba-NLP/new-impl)
+    # miss the pre-downloaded snapshot and fail under offline mode.
+    cache_folder = hub_cache or hf_home
     query_template = os.getenv("EMBED_QUERY_TEMPLATE", "{text}")
     document_template = os.getenv("EMBED_DOCUMENT_TEMPLATE", "{text}")
     runtime_device = resolve_device()
@@ -92,6 +95,7 @@ async def lifespan(app: FastAPI):
             trust_remote_code=True,
             local_files_only=True,
             device=runtime_device,
+            cache_folder=cache_folder,
         )
     else:
         print("RERANKER_MODEL not set, /rerank endpoint will return 503")
