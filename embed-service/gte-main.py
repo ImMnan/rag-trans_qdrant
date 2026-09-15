@@ -90,12 +90,13 @@ async def lifespan(app: FastAPI):
     if reranker_name:
         reranker_path = resolve_model_path(reranker_name, hub_cache)
         print(f"Loading reranker model: {reranker_name} using model path: {reranker_path}")
+        # CrossEncoder has no cache_folder kwarg; its dynamic-module lookups follow
+        # HF_HOME/HF_HUB_CACHE, which are already set to the mounted snapshot cache.
         reranker_model = CrossEncoder(
             reranker_path,
             trust_remote_code=True,
             local_files_only=True,
             device=runtime_device,
-            cache_folder=cache_folder,
         )
     else:
         print("RERANKER_MODEL not set, /rerank endpoint will return 503")
