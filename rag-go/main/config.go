@@ -18,6 +18,9 @@ type config struct {
 	QdrantHost                string // host or host:port
 	QdrantScoreThreshold      float32
 	QdrantNeighborStitch      bool
+	QdrantMMREnabled          bool
+	QdrantMMRLambda           float32
+	QdrantMMROverfetch        int
 	RerankEnabled             bool
 	RerankOverfetchMultiplier int
 	VLLMHost                  string // host or host:port
@@ -49,6 +52,9 @@ func loadConfig() (config, error) {
 		QdrantHost:                normalizeHostPort(getEnv("QDRANT_HOST", "qdrant-service"), 6334),
 		QdrantScoreThreshold:      getEnvFloat32("QDRANT_SCORE_THRESHOLD", 0),
 		QdrantNeighborStitch:      getEnvBool("QDRANT_NEIGHBOR_STITCH", true),
+		QdrantMMREnabled:          getEnvBool("QDRANT_MMR_ENABLED", true),
+		QdrantMMRLambda:           getEnvFloat32("QDRANT_MMR_LAMBDA", 0.7),
+		QdrantMMROverfetch:        getEnvInt("QDRANT_MMR_OVERFETCH", 3),
 		RerankEnabled:             getEnvBool("RERANK_ENABLED", false),
 		RerankOverfetchMultiplier: getEnvInt("RERANK_OVERFETCH_MULTIPLIER", 4),
 		VLLMHost:                  normalizeHostPort(getEnv("VLLM_HOST", "qwen-3-service"), 80),

@@ -3,6 +3,8 @@ package qdrant
 import (
 	"context"
 	"fmt"
+	"math"
+	"strings"
 	"time"
 
 	"github.com/qdrant/go-client/qdrant"
@@ -22,6 +24,9 @@ type Client struct {
 	points         qdrant.PointsClient
 	scoreThreshold float32
 	neighborStitch bool
+	mmrEnabled     bool
+	mmrLambda      float32
+	mmrOverfetch   int
 	log            zerolog.Logger
 }
 
@@ -31,16 +36,27 @@ type Client struct {
 // scoreThreshold <= 0 disables score filtering (all top-K hits are kept).
 // neighborStitch expands each hit that carries file_path+chunk_index with its
 // immediate previous/next chunk from the same file, to avoid mid-function truncation.
-func NewClient(host string, scoreThreshold float32, neighborStitch bool, log zerolog.Logger) *Client {
+// mmrLambda controls relevance versus diversity (1 is relevance-only, 0 is diversity-only).
+// mmrOverfetch is the candidate multiplier used before selecting the requested limit.
+func NewClient(host string, scoreThreshold float32, neighborStitch, mmrEnabled bool, mmrLambda float32, mmrOverfetch int, log zerolog.Logger) *Client {
+	if mmrLambda < 0 || mmrLambda > 1 {
+		mmrLambda = 0.7
+	}
+	if mmrOverfetch < 1 {
+		mmrOverfetch = 1
+	}
 	conn, err := dialWithRetry(host, log)
 	if err != nil {
 		log.Error().Err(err).Str("host", host).Msg("qdrant unavailable, requests will fail until connectivity is restored")
-		return &Client{scoreThreshold: scoreThreshold, neighborStitch: neighborStitch, log: log}
+		return &Client{scoreThreshold: scoreThreshold, neighborStitch: neighborStitch, mmrEnabled: mmrEnabled, mmrLambda: mmrLambda, mmrOverfetch: mmrOverfetch, log: log}
 	}
 	return &Client{
 		points:         qdrant.NewPointsClient(conn),
 		scoreThreshold: scoreThreshold,
 		neighborStitch: neighborStitch,
+		mmrEnabled:     mmrEnabled,
+		mmrLambda:      mmrLambda,
+		mmrOverfetch:   mmrOverfetch,
 		log:            log,
 	}
 }
@@ -104,14 +120,22 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 		must = append(must, dateCondition)
 	}
 
+	candidateLimit := limit
+	if c.mmrEnabled && candidateLimit > 0 {
+		candidateLimit *= c.mmrOverfetch
+	}
+
 	req := &qdrant.QueryPoints{
 		CollectionName: collection,
 		Query:          qdrant.NewQuery(vector...),
 		Filter: &qdrant.Filter{
 			Must: must,
 		},
-		Limit:       qdrant.PtrOf(uint64(limit)),
+		Limit:       qdrant.PtrOf(uint64(candidateLimit)),
 		WithPayload: qdrant.NewWithPayload(true),
+	}
+	if c.mmrEnabled {
+		req.WithVectors = qdrant.NewWithVectors(true)
 	}
 	if c.scoreThreshold > 0 {
 		req.ScoreThreshold = qdrant.PtrOf(c.scoreThreshold)
@@ -144,6 +168,8 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 			source:        source,
 			chunkIndex:    chunkIndex,
 			hasChunkIndex: hasChunkIndex,
+			score:         hit.Score,
+			vector:        denseVector(hit),
 		})
 		c.log.Debug().
 			Str("collection", collection).
@@ -151,6 +177,10 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 			Float32("score", hit.Score).
 			Int("order", len(parsed)-1).
 			Msg("qdrant chunk retrieved")
+	}
+
+	if c.mmrEnabled {
+		parsed = selectDiverse(parsed, vector, limit, c.mmrLambda)
 	}
 
 	if c.neighborStitch {
@@ -192,6 +222,86 @@ type parsedHit struct {
 	source        string // file_path or doc_ref, used both for display and neighbor lookup
 	chunkIndex    int64
 	hasChunkIndex bool
+	score         float32
+	vector        []float32
+}
+
+func denseVector(hit *qdrant.ScoredPoint) []float32 {
+	if hit == nil || hit.Vectors == nil || hit.Vectors.GetVector() == nil {
+		return nil
+	}
+	return hit.Vectors.GetVector().GetDense().GetData()
+}
+
+// selectDiverse applies maximal marginal relevance and removes repeated chunk text.
+// If Qdrant does not return usable vectors, it still performs stable exact deduplication.
+func selectDiverse(hits []parsedHit, query []float32, limit int, lambda float32) []parsedHit {
+	if limit <= 0 || len(hits) <= limit {
+		return deduplicateHits(hits, limit)
+	}
+	remaining := deduplicateHits(hits, len(hits))
+	selected := make([]parsedHit, 0, limit)
+	for len(remaining) > 0 && len(selected) < limit {
+		best := 0
+		bestValue := float32(-math.MaxFloat32)
+		for i, candidate := range remaining {
+			value := lambda * candidate.score
+			if len(candidate.vector) > 0 {
+				value = lambda * cosine(query, candidate.vector)
+				if len(selected) > 0 {
+					maxSimilarity := float32(-1)
+					for _, prior := range selected {
+						if similarity := cosine(candidate.vector, prior.vector); similarity > maxSimilarity {
+							maxSimilarity = similarity
+						}
+					}
+					value -= (1 - lambda) * maxSimilarity
+				}
+			}
+			if value > bestValue {
+				best, bestValue = i, value
+			}
+		}
+		selected = append(selected, remaining[best])
+		remaining = append(remaining[:best], remaining[best+1:]...)
+	}
+	return selected
+}
+
+func deduplicateHits(hits []parsedHit, limit int) []parsedHit {
+	seen := make(map[string]struct{}, len(hits))
+	unique := make([]parsedHit, 0, len(hits))
+	for _, hit := range hits {
+		key := strings.Join(strings.Fields(strings.ToLower(hit.text)), " ")
+		if key == "" {
+			continue
+		}
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		unique = append(unique, hit)
+	}
+	if limit >= 0 && len(unique) > limit {
+		return unique[:limit]
+	}
+	return unique
+}
+
+func cosine(left, right []float32) float32 {
+	if len(left) == 0 || len(left) != len(right) {
+		return 0
+	}
+	var dot, leftNorm, rightNorm float32
+	for i := range left {
+		dot += left[i] * right[i]
+		leftNorm += left[i] * left[i]
+		rightNorm += right[i] * right[i]
+	}
+	if leftNorm == 0 || rightNorm == 0 {
+		return 0
+	}
+	return dot / float32(math.Sqrt(float64(leftNorm*rightNorm)))
 }
 
 // payloadString returns the first non-empty string value found across fields, in order.

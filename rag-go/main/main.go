@@ -48,7 +48,7 @@ func main() {
 		Msg("starting Orca service")
 
 	// --- Clients ---
-	qdrantClient := qdrant.NewClient(cfg.QdrantHost, cfg.QdrantScoreThreshold, cfg.QdrantNeighborStitch, log.Logger)
+	qdrantClient := qdrant.NewClient(cfg.QdrantHost, cfg.QdrantScoreThreshold, cfg.QdrantNeighborStitch, cfg.QdrantMMREnabled, cfg.QdrantMMRLambda, cfg.QdrantMMROverfetch, log.Logger)
 	embedClient := embedder.NewClientFromType(cfg.EmbedClientType, buildHTTPURL(cfg.EmbedHost), cfg.EmbedTimeout, log.Logger)
 	log.Info().Str("url", buildHTTPURL(cfg.VLLMHost)).Msg("vllm transport: http")
 	vllmClient := vllm.NewHTTPClient(buildHTTPURL(cfg.VLLMHost), cfg.ModelName, cfg.VLLMTimeout, log.Logger)
