@@ -38,7 +38,8 @@ const evidenceGroundingRules = "Evidence grounding:\n" +
 	"Any claim resting only on such a chunk must be worded as 'documented as' or 'per comments in <file>', never as confirmed behaviour.\n" +
 	"- A function being defined does not prove it is reachable or enabled. " +
 	"Only call a capability supported if the context shows it invoked, registered, or configured; otherwise say it is defined but its use is not visible in the provided context.\n" +
-	"- Cite the file path from the [source: ...] label when stating a technical fact.\n"
+	"- Cite the file path from the [source: ...] label when stating a technical fact.\n" +
+	"- Reproduce identifiers exactly as they appear in the evidence, character-for-character: env var names, config keys, flags, and file paths. Never drop, add, or respell an underscore, hyphen, or casing.\n"
 
 const docAuthorityRules = "Evidence authority rules:\n" +
 	"- Source code and change evidence is the ground truth for anything in scope of the Original Query. Existing documentation is a candidate artifact to verify against it, never the reverse.\n" +
@@ -46,7 +47,8 @@ const docAuthorityRules = "Evidence authority rules:\n" +
 	"- Where no documentation matches, or it covers a different topic, ignore it and answer from the code. Never bend the answer to fit an unrelated document.\n" +
 	"- Documentation may still supply what code cannot show (intent, prerequisites, external systems). Use it for that, labelled as documented rather than verified.\n" +
 	"- Keep to the query scope: do not mark documentation stale over implementation details the query never asked about.\n" +
-	"- Where the evidence is absent or ambiguous, put it in warnings instead of inventing a value or silently trusting the documentation.\n"
+	"- Where the evidence is absent or ambiguous, put it in warnings instead of inventing a value or silently trusting the documentation.\n" +
+	"- When correcting a stale value, copy the replacement identifier from the evidence character-for-character; never respell an env var, config key, or path while 'fixing' it.\n"
 
 // buildPrompt assembles the LLM messages from retrieved chunks.
 func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
@@ -162,7 +164,8 @@ const productUserAudienceRules = "Audience rules:\n" +
 	"- Write what the reader runs, configures, or deploys: commands, config files, manifests, env vars, flags, ports, endpoints, and how to confirm it worked.\n" +
 	"- Never tell the reader to modify source, functions, Dockerfiles, or templates, and never present a patch, diff, or function signature as a step.\n" +
 	"- Describe the feature as it behaves today, not its change history or how it was implemented.\n" +
-	"- Use only values visible in the provided context. If one the reader needs is missing, write 'Unknown based on provided context' and note it in warnings.\n"
+	"- Use only values visible in the provided context. If one the reader needs is missing, write 'Unknown based on provided context' and note it in warnings.\n" +
+	"- Reproduce identifiers exactly as they appear in the evidence, character-for-character: env var names, config keys, flags, and file paths. Never drop, add, or respell an underscore, hyphen, or casing.\n"
 
 // buildDocTriagePrompt asks which retrieved documentation chunks answer the query. It sees
 // documentation only: this step decides relevance and coverage, never correctness.
