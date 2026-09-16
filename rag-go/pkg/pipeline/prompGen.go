@@ -42,7 +42,7 @@ const evidenceGroundingRules = "Evidence grounding:\n" +
 	"- Reproduce identifiers exactly as they appear in the evidence, character-for-character: env var names, config keys, flags, and file paths. Never drop, add, or respell an underscore, hyphen, or casing.\n"
 
 const docAuthorityRules = "Evidence authority rules:\n" +
-	"- Source code and change evidence is the ground truth for anything in scope of the Original Query. Existing documentation is a candidate artifact to verify against it, never the reverse.\n" +
+	"- Source code is the ground truth for anything in scope of the Original Query. Existing documentation is a candidate artifact to verify against it, never the reverse.\n" +
 	"- Where documentation and code disagree in scope, the code wins: use the code value, cite its file path, and call the documentation outdated.\n" +
 	"- Where no documentation matches, or it covers a different topic, ignore it and answer from the code. Never bend the answer to fit an unrelated document.\n" +
 	"- Documentation may still supply what code cannot show (intent, prerequisites, external systems). Use it for that, labelled as documented rather than verified.\n" +
@@ -63,8 +63,8 @@ func buildPrompt(req Request, changeChunks, codeChunks []string) []Message {
 			"Always answer the Request, but do so within the required section layout below.\n\n" +
 			standardFormatContract + "\n" + evidenceGroundingRules
 
-		userPrompt := fmt.Sprintf("## Reporting Window\n%s to %s\n\n## Diff / Change Hunks\n%s\n\n## Source / Doc Reference\n%s\n\n## Request\n%s",
-			req.FromDate, req.ToDate, changeCtx, codeCtx, req.QueryText)
+		userPrompt := fmt.Sprintf("## Reporting Window\n%s to %s\n\n## Diff / Change Hunks\n%s\n\n## Request\n%s",
+			req.FromDate, req.ToDate, changeCtx, req.QueryText)
 
 		return []Message{
 			{Role: "system", Content: systemPrompt},
@@ -143,13 +143,10 @@ func buildStandardFormatRepairPrompt(answer string) []Message {
 	}
 }
 
-// mergeEvidenceChunks squashes change and code chunks into one evidence list,
-// tagging each chunk with its origin so the model can still cite source per fact.
-func mergeEvidenceChunks(changeChunks, codeChunks []string) []string {
-	merged := make([]string, 0, len(changeChunks)+len(codeChunks))
-	for _, c := range changeChunks {
-		merged = append(merged, "[source: change]\n"+c)
-	}
+// mergeEvidenceChunks tags each code chunk with its origin so the model can still cite
+// source per fact.
+func mergeEvidenceChunks(codeChunks []string) []string {
+	merged := make([]string, 0, len(codeChunks))
 	for _, c := range codeChunks {
 		merged = append(merged, "[source: code]\n"+c)
 	}
@@ -206,10 +203,9 @@ func buildDocComposePrompt(
 	profile DocProfile,
 	triage DocTriageResult,
 	keptDocChunks []string,
-	changeChunks []string,
 	codeChunks []string,
 ) []Message {
-	evidenceCtx := joinChunks(mergeEvidenceChunks(changeChunks, codeChunks), "No change or code context found.")
+	evidenceCtx := joinChunks(mergeEvidenceChunks(codeChunks), "No code context found.")
 	appProfileCtx := "No application profile is configured for this repository."
 	if strings.TrimSpace(req.AppProfile) != "" {
 		appProfileCtx = req.AppProfile
@@ -272,7 +268,7 @@ func buildDocComposePrompt(
 			"## Question\n%s\n\n"+
 			"## Application Profile (who the reader is and what this product is for)\n%s\n\n"+
 			"## Gaps To Close\n%s\n\n"+
-			"## Source Code And Change Evidence (authoritative)\n%s\n\n"+
+			"## Source Code Evidence (authoritative)\n%s\n\n"+
 			"## Documentation Baseline (already filtered to the relevant chunks)\n%s",
 		triage.Coverage,
 		profile.Kind,

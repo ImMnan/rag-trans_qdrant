@@ -174,7 +174,7 @@ func clampFloat(v, minV, maxV float64) float64 {
 }
 
 type DocProcessor interface {
-	Process(ctx context.Context, req Request, changeChunks, codeChunks, docChunks []string) (string, error)
+	Process(ctx context.Context, req Request, codeChunks, docChunks []string) (string, error)
 }
 
 type LLMDocProcessor struct {
@@ -192,7 +192,7 @@ func NewLLMDocProcessor(llm VLLMCompleter, engine DocDecisionEngine) *LLMDocProc
 // Process triages the retrieved documentation, then composes the answer. Source evidence is
 // always given to the compose step: triage can tell whether a document is incomplete, but
 // only the code can tell whether it is stale.
-func (p *LLMDocProcessor) Process(ctx context.Context, req Request, changeChunks, codeChunks, docChunks []string) (string, error) {
+func (p *LLMDocProcessor) Process(ctx context.Context, req Request, codeChunks, docChunks []string) (string, error) {
 	profile := defaultDocProfile()
 	indexed := p.fitTriageChunks(req, indexDocChunks(docChunks))
 
@@ -206,7 +206,7 @@ func (p *LLMDocProcessor) Process(ctx context.Context, req Request, changeChunks
 		triage.Coverage = CoverageNone
 	}
 
-	compose, err := p.runCompose(ctx, req, profile, triage, kept.Chunks, changeChunks, codeChunks)
+	compose, err := p.runCompose(ctx, req, profile, triage, kept.Chunks, codeChunks)
 	if err != nil {
 		return "", err
 	}
@@ -273,10 +273,9 @@ func (p *LLMDocProcessor) runCompose(
 	profile DocProfile,
 	triage DocTriageResult,
 	keptDocChunks []string,
-	changeChunks []string,
 	codeChunks []string,
 ) (DocComposeResult, error) {
-	messages := p.fitComposePrompt(req, profile, triage, keptDocChunks, changeChunks, codeChunks)
+	messages := p.fitComposePrompt(req, profile, triage, keptDocChunks, codeChunks)
 
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
@@ -429,17 +428,16 @@ func (p *LLMDocProcessor) fitTriageChunks(req Request, indexed []string) []strin
 }
 
 // fitComposePrompt drops trailing context until the compose call has at least
-// minGenerateOutputTokens of room, preserving change evidence and trimming code.
+// minGenerateOutputTokens of room, shedding kept docs before code.
 func (p *LLMDocProcessor) fitComposePrompt(
 	req Request,
 	profile DocProfile,
 	triage DocTriageResult,
 	keptDocChunks []string,
-	changeChunks []string,
 	codeChunks []string,
 ) []Message {
 	build := func() []Message {
-		return buildDocComposePrompt(req, profile, triage, keptDocChunks, changeChunks, codeChunks)
+		return buildDocComposePrompt(req, profile, triage, keptDocChunks, codeChunks)
 	}
 
 	messages := build()

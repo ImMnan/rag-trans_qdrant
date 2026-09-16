@@ -94,7 +94,6 @@ type DOCPipeline struct {
 	rerankEnabled             bool
 	rerankOverfetchMultiplier int
 	docProcessor              DocProcessor
-	changeCollection          string
 	codeCollection            string
 	docCollection             string
 	contextTruncationEnabled  bool
@@ -142,7 +141,6 @@ func NewDoc(
 	rerankEnabled bool,
 	rerankOverfetchMultiplier int,
 	contextTruncationEnabled bool,
-	changeCollection string,
 	codeCollection string,
 	docCollection string,
 	appProfileDir string,
@@ -158,7 +156,6 @@ func NewDoc(
 		rerankEnabled:             rerankEnabled,
 		rerankOverfetchMultiplier: rerankOverfetchMultiplier,
 		docProcessor:              docProcessor,
-		changeCollection:          changeCollection,
 		codeCollection:            codeCollection,
 		docCollection:             docCollection,
 		contextTruncationEnabled:  contextTruncationEnabled,
@@ -178,90 +175,61 @@ func (p *DOCPipeline) WithLogger(log zerolog.Logger) *DOCPipeline {
 	return p
 }
 
-// Execute runs the full RAG pipeline for a single request.
+// Execute runs the full RAG pipeline for a single request. Standard summarizes what changed,
+// so it retrieves change_chunks only; every other request answers from the current
+// implementation, so it retrieves code_chunks only.
 func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, error) {
 	isStandard := strings.EqualFold(strings.TrimSpace(req.Type), "standard")
-	if !isStandard {
+
+	var changeChunks, codeChunks []string
+	var retrievedChangeCount, retrievedCodeCount int
+	var contextTruncationActive bool
+
+	if isStandard {
+		chunks, err := p.qdrant.QueryStandardAll(ctx, p.changeCollection, req.RepoID, req.Component, req.FromDate, req.ToDate, p.changeDateField)
+		if err != nil {
+			p.log.Warn().Err(err).Str("collection", p.changeCollection).Msg("qdrant query failed")
+		}
+		retrievedChangeCount = len(chunks)
+		changeChunks = chunks
+	} else {
 		req.AppProfile = resolveAppProfile(p.appProfileDir, p.appProfileFiles, req.RepoID, p.log)
-	}
 
-	// 1. Embed the query once
-	vector, err := p.embedder.Embed(ctx, req.QueryText)
-	if err != nil {
-		return nil, fmt.Errorf("embed: %w", err)
-	}
-
-	// 2. Fan-out: query both the collections concurrently. When reranking is enabled,
-	// over-fetch a larger candidate pool so the cross-encoder has more to choose from.
-	queryLimit := req.Limit
-	if p.rerankEnabled && p.rerankOverfetchMultiplier > 1 {
-		queryLimit = req.Limit * p.rerankOverfetchMultiplier
-	}
-
-	type result struct {
-		chunks []string
-		err    error
-	}
-
-	var wg sync.WaitGroup
-	changeCh := make(chan result, 1)
-	codeCh := make(chan result, 1)
-	wg.Add(2)
-	go func() {
-		defer wg.Done()
-		var chunks []string
-		var err error
-		if isStandard {
-			chunks, err = p.qdrant.QueryStandardAll(ctx, p.changeCollection, req.RepoID, req.Component, req.FromDate, req.ToDate, p.changeDateField)
-		} else {
-			chunks, err = p.qdrant.Query(ctx, p.changeCollection, vector, req.RepoID, req.Component, queryLimit)
+		vector, err := p.embedder.Embed(ctx, req.QueryText)
+		if err != nil {
+			return nil, fmt.Errorf("embed: %w", err)
 		}
-		changeCh <- result{chunks, err}
-	}()
-	go func() {
-		defer wg.Done()
+
+		// Over-fetch a larger candidate pool when reranking is enabled, so the cross-encoder
+		// has more to choose from.
+		queryLimit := req.Limit
+		if p.rerankEnabled && p.rerankOverfetchMultiplier > 1 {
+			queryLimit = req.Limit * p.rerankOverfetchMultiplier
+		}
+
 		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, req.RepoID, req.Component, queryLimit)
-		codeCh <- result{chunks, err}
-	}()
-	wg.Wait()
-
-	changeResult := <-changeCh
-	codeResult := <-codeCh
-
-	if changeResult.err != nil {
-		p.log.Warn().Err(changeResult.err).Str("collection", p.changeCollection).Msg("qdrant query failed")
-	}
-	if codeResult.err != nil {
-		p.log.Warn().Err(codeResult.err).Str("collection", p.codeCollection).Msg("qdrant query failed")
-	}
-
-	retrievedChangeCount := len(changeResult.chunks)
-	retrievedCodeCount := len(codeResult.chunks)
-
-	// 3. Rerank each side's candidate pool down to req.Limit with the cross-encoder.
-	if p.rerankEnabled {
-		if !isStandard {
-			changeResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, changeResult.chunks, req.Limit, p.log)
+		if err != nil {
+			p.log.Warn().Err(err).Str("collection", p.codeCollection).Msg("qdrant query failed")
 		}
-		codeResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, codeResult.chunks, req.Limit, p.log)
+		retrievedCodeCount = len(chunks)
+
+		if p.rerankEnabled {
+			chunks = rerankChunks(ctx, p.reranker, req.QueryText, chunks, req.Limit, p.log)
+		}
+		if p.contextTruncationEnabled {
+			truncated := TruncateChunksToCharBudget(chunks, maxContextCharsTotal)
+			contextTruncationActive = len(truncated) < len(chunks)
+			chunks = truncated
+		}
+		if contextTruncationActive {
+			p.log.Warn().
+				Int("code_chunks_kept", len(chunks)).
+				Int("code_chunks_retrieved", retrievedCodeCount).
+				Msg("truncated retrieved chunks to stay within context budget")
+		}
+		codeChunks = chunks
 	}
 
-	// 4. Build prompt
-	changeChunks := changeResult.chunks
-	codeBudget := maxContextCharsTotal - chunksCharSize(changeChunks)
-	codeChunks := codeResult.chunks
-	if p.contextTruncationEnabled {
-		codeChunks = TruncateChunksToCharBudget(codeResult.chunks, codeBudget)
-	}
-	contextTruncationActive := len(codeChunks) < len(codeResult.chunks)
-	if contextTruncationActive {
-		p.log.Warn().
-			Int("change_chunks_kept", len(changeChunks)).
-			Int("change_chunks_retrieved", len(changeResult.chunks)).
-			Int("code_chunks_kept", len(codeChunks)).
-			Int("code_chunks_retrieved", len(codeResult.chunks)).
-			Msg("truncated retrieved chunks to stay within context budget")
-	}
 	codeChunks, evidenceCounts := annotateCodeChunks(codeChunks)
 	messages := buildPrompt(req, changeChunks, codeChunks)
 	maxTokens := ResolveTokenBudget(req, messages)
@@ -354,7 +322,8 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		return nil, fmt.Errorf("embed: %w", err)
 	}
 
-	// 2. Fan-out: query the evidence collections concurrently
+	// 2. Fan-out: query code and doc collections concurrently. Doc-gen answers from the
+	// current implementation, so it no longer needs change history.
 	queryLimit := req.Limit
 	if p.rerankEnabled && p.rerankOverfetchMultiplier > 1 {
 		queryLimit = req.Limit * p.rerankOverfetchMultiplier
@@ -366,21 +335,14 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	}
 
 	var wg sync.WaitGroup
-	changeCh := make(chan result, 1)
 	codeCh := make(chan result, 1)
 	docCh := make(chan result, 1)
-	wg.Add(3)
-	go func() {
-		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.changeCollection, vector, req.RepoID, req.Component, queryLimit)
-		changeCh <- result{chunks, err}
-	}()
+	wg.Add(2)
 	go func() {
 		defer wg.Done()
 		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, req.RepoID, req.Component, queryLimit)
 		codeCh <- result{chunks, err}
 	}()
-
 	go func() {
 		defer wg.Done()
 		chunks, err := p.qdrant.Query(ctx, p.docCollection, vector, req.RepoID, req.Component, queryLimit)
@@ -388,13 +350,9 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	}()
 	wg.Wait()
 
-	changeResult := <-changeCh
 	codeResult := <-codeCh
 	docResult := <-docCh
 
-	if changeResult.err != nil {
-		p.log.Warn().Err(changeResult.err).Str("collection", p.changeCollection).Msg("qdrant query failed")
-	}
 	if codeResult.err != nil {
 		p.log.Warn().Err(codeResult.err).Str("collection", p.codeCollection).Msg("qdrant query failed")
 	}
@@ -402,34 +360,28 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		p.log.Warn().Err(docResult.err).Str("collection", p.docCollection).Msg("qdrant query failed")
 	}
 
-	retrievedChangeCount := len(changeResult.chunks)
 	retrievedCodeCount := len(codeResult.chunks)
 	retrievedDocCount := len(docResult.chunks)
 
 	// 3. Rerank each evidence pool before context budgeting so every source type
 	// contributes its most query-relevant chunks to the document workflow.
 	if p.rerankEnabled {
-		changeResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, changeResult.chunks, req.Limit, p.log)
 		codeResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, codeResult.chunks, req.Limit, p.log)
 		docResult.chunks = rerankChunks(ctx, p.reranker, req.QueryText, docResult.chunks, req.Limit, p.log)
 	}
 
-	// 4. Cap non-change sides against the whole pool as a backstop only. The doc workflow
-	// splits its context across two calls, and compose fitting preserves change evidence
-	// while shedding documentation and code context around it.
-	changeChunks := changeResult.chunks
+	// 4. Cap each side against the shared pool as a backstop; compose fitting still sheds
+	// documentation before source evidence when both need to shrink further.
 	codeChunks := codeResult.chunks
 	docChunks := docResult.chunks
 	if p.contextTruncationEnabled {
-		codeChunks = TruncateChunksToCharBudget(codeResult.chunks, maxContextCharsTotal-chunksCharSize(changeChunks))
+		codeChunks = TruncateChunksToCharBudget(codeResult.chunks, maxContextCharsTotal)
 		docChunks = TruncateChunksToCharBudget(docResult.chunks, maxContextCharsTotal)
 	}
 	contextTruncationActive := len(codeChunks) < len(codeResult.chunks) ||
 		len(docChunks) < len(docResult.chunks)
 	if contextTruncationActive {
 		p.log.Warn().
-			Int("change_chunks_kept", len(changeChunks)).
-			Int("change_chunks_retrieved", len(changeResult.chunks)).
 			Int("code_chunks_kept", len(codeChunks)).
 			Int("code_chunks_retrieved", len(codeResult.chunks)).
 			Int("doc_chunks_kept", len(docChunks)).
@@ -437,8 +389,8 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 			Msg("truncated retrieved chunks to stay within context budget")
 	}
 
-	// 4. Run strong-confidence doc workflow (extract -> audit -> decide -> generate -> validate)
-	answer, err := p.docProcessor.Process(ctx, req, changeChunks, codeChunks, docChunks)
+	// 5. Run strong-confidence doc workflow (triage -> compose -> decide)
+	answer, err := p.docProcessor.Process(ctx, req, codeChunks, docChunks)
 	if err != nil {
 		return nil, fmt.Errorf("doc workflow: %w", err)
 	}
@@ -446,9 +398,8 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	return &Response{
 		Answer: answer,
 		Sources: map[string]int{
-			"change_chunks_retrieved": retrievedChangeCount,
-			"code_chunks_retrieved":   retrievedCodeCount,
-			"doc_chunks_retrieved":    retrievedDocCount,
+			"code_chunks_retrieved": retrievedCodeCount,
+			"doc_chunks_retrieved":  retrievedDocCount,
 		},
 		Meta: ResponseMeta{
 			RepoID:                   req.RepoID,
