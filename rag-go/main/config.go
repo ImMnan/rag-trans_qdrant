@@ -32,7 +32,6 @@ type config struct {
 	ChangeDateField           string
 	CodeCollection            string
 	DocCollection             string
-	GenDocCollection          string
 	AppProfileDir             string
 	AppProfileFiles           map[string]string
 }
@@ -67,7 +66,6 @@ func loadConfig() (config, error) {
 		ChangeDateField:           getEnv("CHANGE_DATE_FIELD", "date"),
 		CodeCollection:            getEnv("CODE_COLLECTION", "code_chunks"),
 		DocCollection:             getEnv("DOC_COLLECTION", "doc_chunks"),
-		GenDocCollection:          getEnv("GEN_DOC_COLLECTION", "gen_doc_chunks"),
 		AppProfileDir:             getEnv("APP_PROFILE_DIR", "/etc/app-prof"),
 		AppProfileFiles: map[string]string{
 			"github.com/Blazemeter/bzm-crane":  "bzm-crane.txt",

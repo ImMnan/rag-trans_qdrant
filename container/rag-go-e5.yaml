@@ -63,8 +63,6 @@ spec:
           value: "date"
         - name: DOC_COLLECTION
           value: "e5-doc_chunks"
-        - name: GEN_DOC_COLLECTION
-          value: "e5-gen_doc_chunks"
         - name: FIBER_READ_TIMEOUT
           value: "30s"
         - name: FIBER_WRITE_TIMEOUT

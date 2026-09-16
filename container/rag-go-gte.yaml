@@ -61,8 +61,6 @@ spec:
           value: "gte-change_chunks"
         - name: DOC_COLLECTION
           value: "gte-doc_chunks"
-        - name: GEN_DOC_COLLECTION
-          value: "gte-gen_doc_chunks"
         - name: FIBER_READ_TIMEOUT
           value: "180s"
         - name: FIBER_WRITE_TIMEOUT

@@ -174,7 +174,7 @@ func clampFloat(v, minV, maxV float64) float64 {
 }
 
 type DocProcessor interface {
-	Process(ctx context.Context, req Request, changeChunks, codeChunks, docChunks, genDocChunks []string) (string, error)
+	Process(ctx context.Context, req Request, changeChunks, codeChunks, docChunks []string) (string, error)
 }
 
 type LLMDocProcessor struct {
@@ -192,9 +192,9 @@ func NewLLMDocProcessor(llm VLLMCompleter, engine DocDecisionEngine) *LLMDocProc
 // Process triages the retrieved documentation, then composes the answer. Source evidence is
 // always given to the compose step: triage can tell whether a document is incomplete, but
 // only the code can tell whether it is stale.
-func (p *LLMDocProcessor) Process(ctx context.Context, req Request, changeChunks, codeChunks, docChunks, genDocChunks []string) (string, error) {
+func (p *LLMDocProcessor) Process(ctx context.Context, req Request, changeChunks, codeChunks, docChunks []string) (string, error) {
 	profile := defaultDocProfile()
-	indexed := p.fitTriageChunks(req, indexDocChunks(docChunks, genDocChunks))
+	indexed := p.fitTriageChunks(req, indexDocChunks(docChunks))
 
 	triage, triageWarnings, err := p.runTriage(ctx, req, indexed)
 	if err != nil {
@@ -464,13 +464,9 @@ func (p *LLMDocProcessor) fitComposePrompt(
 
 // indexDocChunks labels each documentation chunk with the index triage refers to it by.
 // An index cannot be hallucinated the way a filename can.
-func indexDocChunks(docChunks, genDocChunks []string) []string {
-	all := make([]string, 0, len(docChunks)+len(genDocChunks))
-	all = append(all, docChunks...)
-	all = append(all, genDocChunks...)
-
-	indexed := make([]string, 0, len(all))
-	for _, c := range all {
+func indexDocChunks(docChunks []string) []string {
+	indexed := make([]string, 0, len(docChunks))
+	for _, c := range docChunks {
 		if strings.TrimSpace(c) == "" {
 			continue
 		}
