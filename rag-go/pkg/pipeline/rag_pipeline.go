@@ -38,6 +38,16 @@ type Message struct {
 	Content string
 }
 
+// ProgressEvent describes a completed pipeline milestone for one request.
+type ProgressEvent struct {
+	Stage   string `json:"stage"`
+	Message string `json:"message"`
+	Percent int    `json:"percent"`
+}
+
+// ProgressReporter receives request-scoped pipeline milestones.
+type ProgressReporter func(ProgressEvent)
+
 // Request is the pipeline's input — decoupled from the HTTP layer.
 type Request struct {
 	QueryText  string
@@ -50,6 +60,14 @@ type Request struct {
 	Component  string
 	FromDate   string // YYYY-MM-DD, optional; filters chunks to this date or later.
 	ToDate     string // YYYY-MM-DD, optional; filters chunks to this date or earlier.
+	Progress   ProgressReporter
+}
+
+// ReportProgress sends a milestone only when the caller requested progress updates.
+func (r Request) ReportProgress(stage, message string, percent int) {
+	if r.Progress != nil {
+		r.Progress(ProgressEvent{Stage: stage, Message: message, Percent: percent})
+	}
 }
 
 // Response is what the pipeline returns to the handler.
@@ -192,6 +210,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		}
 		retrievedChangeCount = len(chunks)
 		changeChunks = chunks
+		req.ReportProgress("qdrant_query_complete", "Qdrant query complete", 25)
 	} else {
 		req.AppProfile = resolveAppProfile(p.appProfileDir, p.appProfileFiles, req.RepoID, p.log)
 
@@ -199,6 +218,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		if err != nil {
 			return nil, fmt.Errorf("embed: %w", err)
 		}
+		req.ReportProgress("embedding_complete", "Embedding complete", 15)
 
 		// Over-fetch a larger candidate pool when reranking is enabled, so the cross-encoder
 		// has more to choose from.
@@ -212,6 +232,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 			p.log.Warn().Err(err).Str("collection", p.codeCollection).Msg("qdrant query failed")
 		}
 		retrievedCodeCount = len(chunks)
+		req.ReportProgress("qdrant_query_complete", "Qdrant query complete", 25)
 
 		if p.rerankEnabled {
 			chunks = rerankChunks(ctx, p.reranker, req.QueryText, chunks, req.Limit, p.log)
@@ -233,6 +254,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	codeChunks, evidenceCounts := annotateCodeChunks(codeChunks)
 	messages := buildPrompt(req, changeChunks, codeChunks)
 	maxTokens := ResolveTokenBudget(req, messages)
+	req.ReportProgress("messages_assembled", "Assembled vLLM messages", 50)
 
 	// 4. Call LLM
 	p.log.Info().
@@ -245,6 +267,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	if err != nil {
 		return nil, fmt.Errorf("vllm complete: %w", err)
 	}
+	req.ReportProgress("vllm_complete", "vLLM completion complete", 80)
 
 	// 5. Enforce the section template for standard answers, with one reformat retry.
 	if isStandard && !hasStandardSections(answer) {
@@ -256,6 +279,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 			p.log.Warn().Err(repairErr).Msg("standard answer reformat failed, returning original")
 		case hasStandardSections(repaired):
 			answer = repaired
+			req.ReportProgress("vllm_complete", "vLLM format repair complete", 80)
 		default:
 			p.log.Warn().Msg("standard answer reformat still missing sections, returning original")
 		}
@@ -321,6 +345,7 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	if err != nil {
 		return nil, fmt.Errorf("embed: %w", err)
 	}
+	req.ReportProgress("embedding_complete", "Embedding complete", 15)
 
 	// 2. Fan-out: query code and doc collections concurrently. Doc-gen answers from the
 	// current implementation, so it no longer needs change history.
@@ -362,6 +387,7 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 
 	retrievedCodeCount := len(codeResult.chunks)
 	retrievedDocCount := len(docResult.chunks)
+	req.ReportProgress("qdrant_query_complete", "Qdrant queries complete", 25)
 
 	// 3. Rerank each evidence pool before context budgeting so every source type
 	// contributes its most query-relevant chunks to the document workflow.

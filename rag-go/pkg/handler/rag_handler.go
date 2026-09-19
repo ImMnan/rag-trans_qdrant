@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"bufio"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
-	"github.com/gofiber/fiber/v2"
+	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
 
 	"github.com/immnan/rag-trans_qdrant/rag-go/pkg/pipeline"
@@ -53,9 +55,9 @@ type DocGenerateRequest struct {
 	Component  string `json:"component,omitempty"`
 }
 
-func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
+func (rp *ragHandler) handleRAG(c fiber.Ctx) error {
 	var req RAGRequest
-	if err := c.BodyParser(&req); err != nil {
+	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
 
@@ -88,6 +90,10 @@ func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
 		req.FromDate = now.AddDate(0, 0, -30).Format("2006-01-02")
 		req.ToDate = now.Format("2006-01-02")
 	}
+	stream, err := streamRequested(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
 
 	rp.log.Info().
 		Str("repo_id", req.RepoID).
@@ -99,7 +105,7 @@ func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
 		Str("to_date", req.ToDate).
 		Msg("rag request received")
 
-	result, err := rp.pipe.Execute(c.Context(), pipeline.Request{
+	pipelineRequest := pipeline.Request{
 		QueryText:  req.QueryText,
 		RepoID:     req.RepoID,
 		Type:       req.Type,
@@ -108,7 +114,16 @@ func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
 		Component:  req.Component,
 		FromDate:   req.FromDate,
 		ToDate:     req.ToDate,
-	})
+	}
+	if stream {
+		requestContext := c.Context()
+		return streamPipelineResponse(c, func(progress pipeline.ProgressReporter) (*pipeline.Response, error) {
+			pipelineRequest.Progress = progress
+			return rp.pipe.Execute(requestContext, pipelineRequest)
+		})
+	}
+
+	result, err := rp.pipe.Execute(c.Context(), pipelineRequest)
 	if err != nil {
 		rp.log.Error().Err(err).Str("repo_id", req.RepoID).Msg("pipeline execution failed")
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "pipeline failed"})
@@ -117,9 +132,9 @@ func (rp *ragHandler) handleRAG(c *fiber.Ctx) error {
 	return c.JSON(result)
 }
 
-func (dp *docHandler) handleRAG(c *fiber.Ctx) error {
+func (dp *docHandler) handleRAG(c fiber.Ctx) error {
 	var req DocGenerateRequest
-	if err := c.BodyParser(&req); err != nil {
+	if err := c.Bind().Body(&req); err != nil {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid request body"})
 	}
 
@@ -132,6 +147,10 @@ func (dp *docHandler) handleRAG(c *fiber.Ctx) error {
 	if req.Limit <= 0 {
 		req.Limit = 25
 	}
+	stream, err := streamRequested(c)
+	if err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
 
 	dp.log.Info().
 		Str("repo_id", req.RepoID).
@@ -139,13 +158,22 @@ func (dp *docHandler) handleRAG(c *fiber.Ctx) error {
 		Int("limit", req.Limit).
 		Msg("doc generate/update request received")
 
-	result, err := dp.pipe.Execute(c.Context(), pipeline.Request{
+	pipelineRequest := pipeline.Request{
 		QueryText:  req.QueryText,
 		RepoID:     req.RepoID,
 		Limit:      req.Limit,
 		TokenLimit: req.TokenLimit,
 		Component:  req.Component,
-	})
+	}
+	if stream {
+		requestContext := c.Context()
+		return streamPipelineResponse(c, func(progress pipeline.ProgressReporter) (*pipeline.Response, error) {
+			pipelineRequest.Progress = progress
+			return dp.pipe.Execute(requestContext, pipelineRequest)
+		})
+	}
+
+	result, err := dp.pipe.Execute(c.Context(), pipelineRequest)
 	if err != nil {
 		dp.log.Error().Err(err).Str("repo_id", req.RepoID).Str("component", req.Component).Msg("pipeline execution failed")
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "pipeline failed"})
@@ -154,6 +182,50 @@ func (dp *docHandler) handleRAG(c *fiber.Ctx) error {
 	return c.JSON(result)
 }
 
-func handleHealth(c *fiber.Ctx) error {
+func handleHealth(c fiber.Ctx) error {
 	return c.JSON(fiber.Map{"status": "ok", "service": "orca"})
+}
+
+func streamRequested(c fiber.Ctx) (bool, error) {
+	switch strings.ToLower(strings.TrimSpace(c.Query("stream"))) {
+	case "", "false":
+		return false, nil
+	case "true":
+		return true, nil
+	default:
+		return false, fmt.Errorf("stream must be true or false")
+	}
+}
+
+func streamPipelineResponse(c fiber.Ctx, execute func(pipeline.ProgressReporter) (*pipeline.Response, error)) error {
+	c.Set(fiber.HeaderContentType, "text/event-stream")
+	c.Set(fiber.HeaderCacheControl, "no-cache")
+	c.Set("X-Accel-Buffering", "no")
+
+	return c.SendStreamWriter(func(w *bufio.Writer) {
+		writeSSE(w, "progress", pipeline.ProgressEvent{
+			Stage:   "request_received",
+			Message: "Request received",
+			Percent: 0,
+		})
+
+		result, err := execute(func(event pipeline.ProgressEvent) {
+			writeSSE(w, "progress", event)
+		})
+		if err != nil {
+			writeSSE(w, "error", fiber.Map{"error": "pipeline failed"})
+			return
+		}
+
+		writeSSE(w, "complete", result)
+	})
+}
+
+func writeSSE(w *bufio.Writer, event string, payload any) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", event, data)
+	_ = w.Flush()
 }

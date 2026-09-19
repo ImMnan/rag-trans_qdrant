@@ -71,6 +71,40 @@ curl -X POST "http://orca-infer.ai/api/v1/rag-go/generate-doc" \
      -d '{ "query_text": "How to run selenium test with specific version of chromedriver", "repo_id": "github.com/Blazemeter/taurus", "type":"direct", "limit": 15}'
 ```
 
+### Progress streaming
+
+Both RAG endpoints support Server-Sent Events (SSE) when `stream=true` is present:
+
+```sh
+curl -N -X POST "http://orca-infer.ai/api/v1/rag-go?stream=true" \
+     -H "Content-Type: application/json" \
+     -d '{"query_text":"What changed?","repo_id":"github.com/example/repo","type":"direct"}'
+```
+
+The response emits `progress` events followed by exactly one terminal `complete` or
+`error` event. A `progress` event uses this stable shape:
+
+```json
+{"stage":"qdrant_query_complete","message":"Qdrant query complete","percent":35}
+```
+
+The current milestones are `request_received` (0), `embedding_complete` (15),
+`qdrant_query_complete` (35), `messages_assembled` (60; document composition uses
+80), and `vllm_complete` (95). `complete` contains the same response JSON returned
+by a normal request.
+
+To change a percentage or add a progress item, call the request-scoped reporter at
+the completed pipeline boundary:
+
+```go
+req.ReportProgress("rerank_complete", "Reranking complete", 50)
+```
+
+Use a stable, snake-case stage name and a percentage that never decreases within a
+single workflow. The handler owns the terminal `complete` event, so pipeline code
+should only report work milestones. Without `stream=true`, the endpoints retain the
+original single JSON response.
+
 
 
 Looking at the ingestion payload and the current retrieval path (`Query`/`QueryStandard` in `client_qdrant.go`, fan-out + budgeting in `rag_pipeline.go`), there's real room to improve retrieval quality. Here's what stands out, purely as analysis:
@@ -117,3 +151,9 @@ Filtering on `repo_id`/`component`/date fields is only fast if those payload fie
 
 ---
 **Priority order if you want the best effort/impact ratio:** (3) reranking → (1) score threshold → (4) neighbor-chunk stitching → (2) hybrid sparse+dense → (5) MMR/dedup → (8) query rewriting → (6)/(7)/(9)/(10) as refinements.
+
+
+> **WARNING** : Ensure you do not use IAM or AWS credential/annotations we configure here to connect to AWS S3, it is not supported. 
+
+
+ While this is something customer's devOps should be able to handle, this guide is meant to give engineers an idea of what the customers should follow and catch misconfigurations.  

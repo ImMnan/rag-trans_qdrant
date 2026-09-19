@@ -250,6 +250,7 @@ func (p *LLMDocProcessor) runTriage(ctx context.Context, req Request, indexed []
 	}
 
 	schema := `{"topic":"<topic>","coverage":"complete|partial|none","relevant_chunks":[{"index":0,"relevance":0.0,"why":"<why>"}],"missing_points":["<what the docs do not answer>"],"reason":"<reason>"}`
+	req.ReportProgress("messages_assembled", "Assembled triage messages", 60)
 	raw, err := p.completeAndRepairJSON(ctx, req, "triage", schema, buildDocTriagePrompt(req, indexed))
 	if err != nil {
 		return DocTriageResult{}, nil, err
@@ -288,10 +289,12 @@ func (p *LLMDocProcessor) runCompose(
 			})
 		}
 
+		req.ReportProgress("messages_assembled", "Assembled document-generation messages", 80)
 		raw, err := p.llm.Complete(ctx, messages, ResolveDocStepTokenBudget(req, "compose", messages))
 		if err != nil {
 			return DocComposeResult{}, fmt.Errorf("vllm compose step: %w", err)
 		}
+		req.ReportProgress("document_generation_complete", "Document generation complete", 95)
 
 		out := parseComposeEnvelope(raw)
 		if lastErr = validateComposeResult(out); lastErr == nil {
@@ -604,6 +607,7 @@ func (p *LLMDocProcessor) completeAndRepairJSON(ctx context.Context, req Request
 	if err != nil {
 		return "", fmt.Errorf("vllm %s step: %w", stepName, err)
 	}
+	req.ReportProgress("triage_complete", "Documentation triage complete", 70)
 
 	if normalized, ok := normalizeJSONObject(raw); ok {
 		return normalized, nil
@@ -615,6 +619,7 @@ func (p *LLMDocProcessor) completeAndRepairJSON(ctx context.Context, req Request
 	if repairErr != nil {
 		return "", fmt.Errorf("invalid json in %s step and repair failed: %w", stepName, repairErr)
 	}
+	req.ReportProgress("triage_repair_complete", "Documentation triage repair complete", 75)
 	normalizedRepair, ok := normalizeJSONObject(repairRaw)
 	if !ok {
 		return "", fmt.Errorf("invalid json in %s step after repair", stepName)
