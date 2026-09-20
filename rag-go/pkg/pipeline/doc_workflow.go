@@ -250,7 +250,8 @@ func (p *LLMDocProcessor) runTriage(ctx context.Context, req Request, indexed []
 	}
 
 	schema := `{"topic":"<topic>","coverage":"complete|partial|none","relevant_chunks":[{"index":0,"relevance":0.0,"why":"<why>"}],"missing_points":["<what the docs do not answer>"],"reason":"<reason>"}`
-	req.ReportProgress("messages_assembled", "Assembled triage messages", 60)
+	req.ReportProgress("messages_assembled", "Assembled triage messages", 50)
+	req.ReportProgress("messages_assembled", "LLM Processing...", 60)
 	raw, err := p.completeAndRepairJSON(ctx, req, "triage", schema, buildDocTriagePrompt(req, indexed))
 	if err != nil {
 		return DocTriageResult{}, nil, err

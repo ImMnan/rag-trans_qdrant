@@ -254,8 +254,8 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	codeChunks, evidenceCounts := annotateCodeChunks(codeChunks)
 	messages := buildPrompt(req, changeChunks, codeChunks)
 	maxTokens := ResolveTokenBudget(req, messages)
-	req.ReportProgress("messages_assembled", "Assembled vLLM messages", 50)
-
+	req.ReportProgress("messages_assembled", "Assembled vLLM messages", 60)
+	req.ReportProgress("messages_assembled", "LLM Processing...", 70)
 	// 4. Call LLM
 	p.log.Info().
 		Str("messages_sha256", hashMessages(messages)).
@@ -267,7 +267,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	if err != nil {
 		return nil, fmt.Errorf("vllm complete: %w", err)
 	}
-	req.ReportProgress("vllm_complete", "vLLM completion complete", 80)
+	req.ReportProgress("vllm_complete", "vLLM completion complete", 95)
 
 	// 5. Enforce the section template for standard answers, with one reformat retry.
 	if isStandard && !hasStandardSections(answer) {
@@ -279,7 +279,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 			p.log.Warn().Err(repairErr).Msg("standard answer reformat failed, returning original")
 		case hasStandardSections(repaired):
 			answer = repaired
-			req.ReportProgress("vllm_complete", "vLLM format repair complete", 80)
+			req.ReportProgress("vllm_complete", "vLLM format repair complete", 95)
 		default:
 			p.log.Warn().Msg("standard answer reformat still missing sections, returning original")
 		}
