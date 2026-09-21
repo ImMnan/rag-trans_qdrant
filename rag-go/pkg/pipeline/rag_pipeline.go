@@ -254,8 +254,8 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	codeChunks, evidenceCounts := annotateCodeChunks(codeChunks)
 	messages := buildPrompt(req, changeChunks, codeChunks)
 	maxTokens := ResolveTokenBudget(req, messages)
-	req.ReportProgress("messages_assembled", "Assembled vLLM messages", 60)
-	req.ReportProgress("messages_assembled", "LLM Processing...", 70)
+	req.ReportProgress("messages_assembled", "Assembled vLLM messages, awaiting LLM response...", 60)
+	//req.ReportProgress("messages_assembled", "LLM Processing...", 70)
 	// 4. Call LLM
 	p.log.Info().
 		Str("messages_sha256", hashMessages(messages)).

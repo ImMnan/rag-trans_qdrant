@@ -44,7 +44,7 @@ data:
     Taurus is a test orchestration tool for performance and functional testing. It lets users define test plans in YAML and run them with supported executors such as JMeter, Gatling, Locust.io, and Selenium WebDriver.
     
     Primary user goal:
-    Create test YAML files, run Taurus tests, configure execution behavior, and interpret the output reports without modifying the Taurus source code.
+    Create test YAML files, run Taurus tests with 'bzt' command, configure execution behavior, and interpret the output reports without modifying the Taurus source code.
     
     Answer style:
     For direct how-to questions, provide step-by-step operational guidance only.

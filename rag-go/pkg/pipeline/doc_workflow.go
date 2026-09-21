@@ -250,8 +250,7 @@ func (p *LLMDocProcessor) runTriage(ctx context.Context, req Request, indexed []
 	}
 
 	schema := `{"topic":"<topic>","coverage":"complete|partial|none","relevant_chunks":[{"index":0,"relevance":0.0,"why":"<why>"}],"missing_points":["<what the docs do not answer>"],"reason":"<reason>"}`
-	req.ReportProgress("messages_assembled", "Assembled triage messages", 50)
-	req.ReportProgress("messages_assembled", "LLM Processing...", 60)
+	req.ReportProgress("messages_assembled", "Assembled triage messages, now awaiting LLM response...", 65)
 	raw, err := p.completeAndRepairJSON(ctx, req, "triage", schema, buildDocTriagePrompt(req, indexed))
 	if err != nil {
 		return DocTriageResult{}, nil, err
@@ -290,7 +289,7 @@ func (p *LLMDocProcessor) runCompose(
 			})
 		}
 
-		req.ReportProgress("messages_assembled", "Assembled document-generation messages", 80)
+		req.ReportProgress("messages_assembled", "Assembled document-generation messages, now awaiting LLM response...", 80)
 		raw, err := p.llm.Complete(ctx, messages, ResolveDocStepTokenBudget(req, "compose", messages))
 		if err != nil {
 			return DocComposeResult{}, fmt.Errorf("vllm compose step: %w", err)
