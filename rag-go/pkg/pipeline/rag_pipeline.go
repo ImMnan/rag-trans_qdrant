@@ -211,6 +211,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		retrievedChangeCount = len(chunks)
 		changeChunks = chunks
 		req.ReportProgress("qdrant_query_complete", "Qdrant query complete", 25)
+		req.ReportProgress("context_ready", "Standard change context ready", 30)
 	} else {
 		req.AppProfile = resolveAppProfile(p.appProfileDir, p.appProfileFiles, req.RepoID, p.log)
 
@@ -236,6 +237,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 
 		if p.rerankEnabled {
 			chunks = rerankChunks(ctx, p.reranker, req.QueryText, chunks, req.Limit, p.log)
+			req.ReportProgress("re_ranking", "Re-ranking complete", 35)
 		}
 		if p.contextTruncationEnabled {
 			truncated := TruncateChunksToCharBudget(chunks, maxContextCharsTotal)
