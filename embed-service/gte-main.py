@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
+from fastembed import SparseTextEmbedding
 from pydantic import BaseModel
 from sentence_transformers import CrossEncoder, SentenceTransformer
 from starlette.concurrency import run_in_threadpool
@@ -13,6 +14,7 @@ import torch
 embed_model = None
 # Reranker is a separate cross-encoder model, independent of the embedding model above.
 reranker_model = None
+sparse_model = None
 query_template = "{text}"
 document_template = "{text}"
 runtime_device = "unknown"
@@ -57,7 +59,7 @@ def resolve_device() -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
-    global embed_model, reranker_model, query_template, document_template, runtime_device
+    global embed_model, reranker_model, sparse_model, query_template, document_template, runtime_device
     model_name = os.getenv("EMBED_MODEL", "Alibaba-NLP/gte-Qwen2-1.5B-instruct")
     hf_home = os.getenv("HF_HOME", "/models")
     hub_cache = os.getenv("HF_HUB_CACHE")
@@ -100,6 +102,20 @@ async def lifespan(app: FastAPI):
         )
     else:
         print("RERANKER_MODEL not set, /rerank endpoint will return 503")
+
+    # Must be the same model the ingestion pipeline used for the collections' sparse vectors.
+    sparse_name = os.getenv("SPARSE_MODEL", "Qdrant/bm25")
+    if sparse_name:
+        sparse_path = resolve_model_path(sparse_name, hub_cache)
+        print(f"Loading sparse model: {sparse_name} using model path: {sparse_path}")
+        sparse_model = SparseTextEmbedding(
+            model_name=sparse_name,
+            cache_dir=hub_cache,
+            specific_model_path=sparse_path if sparse_path != sparse_name else None,
+            local_files_only=True,
+        )
+    else:
+        print("SPARSE_MODEL not set, /sparse endpoint will return 503")
 
     yield
     # Shutdown (optional cleanup)
@@ -168,6 +184,35 @@ async def rerank(request: RerankRequest) -> RerankResponse:
         return RerankResponse(scores=scores.tolist())
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Rerank failed: {str(e)}")
+
+class SparseRequest(BaseModel):
+    text: str
+
+class SparseResponse(BaseModel):
+    indices: list[int]
+    values: list[float]
+
+
+def encode_sparse_query(text: str):
+    return next(iter(sparse_model.query_embed(text)))
+
+@app.post("/sparse")
+async def sparse(request: SparseRequest) -> SparseResponse:
+    """Encode query text into a BM25 sparse vector for Qdrant hybrid retrieval."""
+    if sparse_model is None:
+        raise HTTPException(status_code=503, detail="Sparse model not loaded; set SPARSE_MODEL")
+
+    if not request.text or not request.text.strip():
+        raise HTTPException(status_code=400, detail="text cannot be empty")
+
+    try:
+        embedding = await run_in_threadpool(encode_sparse_query, request.text)
+        return SparseResponse(
+            indices=[int(index) for index in embedding.indices],
+            values=[float(value) for value in embedding.values],
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Sparse encoding failed: {str(e)}")
 
 class OpenAIEmbeddingsRequest(BaseModel):
     model: str = ""
