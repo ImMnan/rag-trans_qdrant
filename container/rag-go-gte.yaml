@@ -81,6 +81,11 @@ spec:
           value: "0.7"
         - name: QDRANT_MMR_OVERFETCH
           value: "3"
+        # Dense+sparse (BM25) RRF retrieval; requires the embed service's /sparse endpoint.
+        - name: QDRANT_HYBRID_ENABLED
+          value: "true"
+        - name: QDRANT_HYBRID_PREFETCH_MULTIPLIER
+          value: "2"
         - name: CONTEXT_TRUNCATION_ENABLED
           value: "false"
         volumeMounts:
