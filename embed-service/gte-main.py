@@ -107,11 +107,21 @@ async def lifespan(app: FastAPI):
     sparse_name = os.getenv("SPARSE_MODEL", "Qdrant/bm25")
     if sparse_name:
         sparse_path = resolve_model_path(sparse_name, hub_cache)
+        if sparse_path == sparse_name:
+            raise RuntimeError(
+                f"Sparse model {sparse_name} was not found in the model cache "
+                f"({hub_cache or 'HF_HUB_CACHE unset'}). Pre-fetch it with "
+                f"snapshot_download('{sparse_name}', cache_dir=...) in the init container; "
+                "fastembed cannot resolve it offline by name."
+            )
         print(f"Loading sparse model: {sparse_name} using model path: {sparse_path}")
+        # specific_model_path is mandatory here: fastembed 0.8.x declares Qdrant/bm25 with
+        # model_file="mock.file", which does not exist in the repo, so its offline HF-cache
+        # lookup always fails and falls back to a GCS tar.gz layout that we never populate.
         sparse_model = SparseTextEmbedding(
             model_name=sparse_name,
             cache_dir=hub_cache,
-            specific_model_path=sparse_path if sparse_path != sparse_name else None,
+            specific_model_path=sparse_path,
             local_files_only=True,
         )
     else:
