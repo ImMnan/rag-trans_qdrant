@@ -107,53 +107,45 @@ original single JSON response.
 
 
 
-Looking at the ingestion payload and the current retrieval path (`Query`/`QueryStandard` in `client_qdrant.go`, fan-out + budgeting in `rag_pipeline.go`), there's real room to improve retrieval quality. Here's what stands out, purely as analysis:
+### Hybrid retrieval
 
-## 1. Retrieval is dense-only, no score filtering - DONE
-`query()` builds a `QueryPoints` request with no `ScoreThreshold` and never inspects `hit.Score` beyond a debug log. That means:
-- Every query always returns up to `limit` chunks even if the best match is a poor cosine match — irrelevant chunks get shipped to the LLM and consume budget/attention.
-- **Improvement:** add a `ScoreThreshold` (tunable per collection) so low-similarity noise is dropped before it ever competes for the char budget in `AllocateChunkCharBudget`.
+The code, change, and documentation collections use named Qdrant vectors: `dense`
+for the existing cosine embedding and `sparse` for BM25. The ingestion pipeline
+generates sparse vectors with `fastembed`'s `Qdrant/bm25` model. The GTE embedding
+service exposes the matching query encoder at `/sparse`; e5 currently uses
+dense-only retrieval.
 
-## 2. No hybrid (sparse + dense) retrieval - LAST
-The payload has no sparse/BM25-friendly field (e.g., no keyword/sparse vector), so retrieval is 100% dense embedding similarity. Dense embeddings are weak on exact identifiers — function names, error codes, env var names, config keys (`VLLM_TIMEOUT`, `EMBED_TIMEOUT`, specific commit SHAs) — which this codebase clearly cares about (per your own memory notes about exact-match filtering like `repo_id`).
-- **Improvement:** add a sparse vector (Qdrant supports named sparse vectors) generated from BM25/SPLADE over `text`, and do a hybrid query (RRF fusion) in Qdrant. This alone often gives the largest retrieval-quality jump for code/config-heavy corpora.
+For code and document retrieval, Orca sends dense and sparse candidate searches to
+Qdrant and combines them with reciprocal rank fusion (RRF). This can improve recall
+for exact identifiers such as function names, error messages, environment variables,
+and configuration keys while retaining dense semantic matching. Both candidate
+searches apply the same `repo_id` and optional `component` filters.
 
-## 3. No cross-encoder reranking - DONE - NOT used, need GPU
-Right now the top-K from Qdrant is used as-is. Bi-encoder similarity is good for recall, poor for precision at the top.
-- **Improvement:** retrieve a larger candidate pool (e.g., `limit*4`) then rerank with a cross-encoder (or even use the LLM itself for cheap listwise reranking) before truncating to the final chunks that go into the prompt. This is usually the single highest-ROI change for RAG accuracy.
+`QDRANT_SCORE_THRESHOLD` is a cosine-similarity threshold, so hybrid queries apply
+it only to the dense candidate search. Sparse BM25 scores and fused RRF scores are
+not cosine similarities and are not filtered by this threshold. If sparse query
+encoding fails, that request logs a warning and falls back to dense-only retrieval.
 
-## 4. Chunking has no overlap/neighbor stitching, despite `chunk_index` existing - DONE
-You store `chunk_index` per file but retrieval treats each chunk as an independent unit — no expansion to neighboring chunks. This causes truncated logic/functions ("mid-explanation" chunks) to be handed to the LLM without their context.
-- **Improvement:** when a chunk from `file_path`+`chunk_index` scores well, fetch `chunk_index-1`/`chunk_index+1` from the same file (a Qdrant scroll/filter by `file_path` + range) and stitch them — classic "sentence-window"/"parent-document" retrieval pattern. Since `file_path` and `chunk_index` are already indexed in the payload, this is cheap to add.
+When MMR is enabled, hybrid-result relevance follows the fused result rank; cosine
+similarity between dense vectors is still used to diversify the selected chunks.
+This preserves sparse-only matches that could otherwise be pushed down by dense
+similarity. Neighbor-chunk stitching, optional cross-encoder reranking, and context
+truncation remain downstream of retrieval. Cross-encoder reranking is controlled by
+`RERANK_ENABLED` and is disabled by default.
 
-## 5. No dedup/diversity (MMR) across results - DONE
-If a file was chunked densely, multiple near-duplicate chunks from the same `file_path` can dominate all `limit` slots, crowding out other relevant files/components.
-- **Improvement:** apply Maximal Marginal Relevance (MMR) or simple "cap N chunks per `file_path`" diversity logic post-retrieval.
+Hybrid retrieval is enabled by default with `QDRANT_HYBRID_ENABLED=true`. The
+related Qdrant settings are:
 
-## 6. `date`/`month`/`date_short` are underused - DONE
-These exist for `QueryStandard`'s date-range filter, but nothing does recency-boosting for the default (non-"standard") path. For a repo where change history and code evolve, an old vs. new answer can matter.
-- **Improvement:** for non-standard queries, consider a mild recency boost (e.g., combine similarity score with a decayed function of `date`) rather than a hard filter, so more recent commits/docs are favored without being mandatory.
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `QDRANT_HYBRID_ENABLED` | `true` | Request BM25 query vectors and use hybrid retrieval when supported by the embed client. |
+| `QDRANT_DENSE_VECTOR_NAME` | `dense` | Named dense vector; set to an empty value only for legacy collections with an unnamed dense vector. |
+| `QDRANT_SPARSE_VECTOR_NAME` | `sparse` | Named sparse vector in Qdrant. |
+| `QDRANT_HYBRID_PREFETCH_MULTIPLIER` | `2` | Multiplier for each dense/sparse candidate pool before RRF fusion. |
 
-## 7. `component` is a coarse-only filter, no weighting
-`component` is used as an exact-match `must` filter, all-or-nothing. If it's wrong/missing at query time, retrieval silently returns 0 relevant results from that component, or if omitted, mixes everything.
-- **Improvement:** consider `should` (boost) instead of `must` when the caller is uncertain, or fall back to unfiltered retrieval when a `must` component filter returns too few hits.
-
-## 8. No query expansion / rewriting 
-A single embed of the raw user query is used for both collections. Char-for-char the same vector is reused for change/code/doc collections which have very different content styles (diffs vs. source vs. prose).
-- **Improvement:** generate collection-specific query variants (e.g., an LLM-rewritten "code-search style" query for the code collection vs. the raw NL query for docs) — this is a well-known technique (HyDE / query rewriting) that improves cross-domain recall.
-
-## 9. Embedding model recorded but not used for staleness detection
-`embedding_model` is stored per point but nothing checks it against the model actually configured for the live embedder. If you ever swap embedding models (e5 ↔ gte, see `client_factory.go`), old vectors and new query vectors become incomparable, silently degrading retrieval with no error.
-- **Improvement:** validate/log a warning when the payload's `embedding_model` for retrieved hits doesn't match the active embedder, so a silent-quality-regression from model drift is caught rather than looking like "bad retrieval."
-
-## 10. Payload indexing not verifiable from this code
-Filtering on `repo_id`/`component`/date fields is only fast if those payload fields have Qdrant payload indexes created at collection setup — that's not part of this Go code, so it's worth double-checking the collection schema explicitly declares indexes for `repo_id`, `component`, and `date` (keyword/datetime index types) to avoid full scans as the collection grows.
-
----
-**Priority order if you want the best effort/impact ratio:** (3) reranking → (1) score threshold → (4) neighbor-chunk stitching → (2) hybrid sparse+dense → (5) MMR/dedup → (8) query rewriting → (6)/(7)/(9)/(10) as refinements.
-
-
-> **WARNING** : Ensure you do not use IAM or AWS credential/annotations we configure here to connect to AWS S3, it is not supported. 
-
-
- While this is something customer's devOps should be able to handle, this guide is meant to give engineers an idea of what the customers should follow and catch misconfigurations.  
+Hybrid retrieval requires collections created with both named vectors and points
+ingested with sparse vectors. Recreating an empty collection does not backfill
+existing points: rerun ingestion for the code, change, and documentation collections
+using the ingestion repository's full-reingest procedure before enabling hybrid
+queries. Standard change-summary requests continue to scroll all change chunks in
+the requested date range rather than using vector search.
