@@ -14,8 +14,8 @@ import (
 
 // Interfaces — swap real clients for mocks in tests.
 type QdrantQuerier interface {
-	Query(ctx context.Context, collection string, vector []float32, repoID, component string, limit int) ([]string, error)
-	QueryStandard(ctx context.Context, collection string, vector []float32, repoID, component string, limit int, fromDate, toDate, dateField string) ([]string, error)
+	Query(ctx context.Context, collection string, vector []float32, sparseIndices []uint32, sparseValues []float32, repoID, component string, limit int) ([]string, error)
+	QueryStandard(ctx context.Context, collection string, vector []float32, sparseIndices []uint32, sparseValues []float32, repoID, component string, limit int, fromDate, toDate, dateField string) ([]string, error)
 	QueryStandardAll(ctx context.Context, collection string, repoID, component string, fromDate, toDate, dateField string) ([]string, error)
 }
 
@@ -25,6 +25,11 @@ type VLLMCompleter interface {
 
 type Embedder interface {
 	Embed(ctx context.Context, text string) ([]float32, error)
+}
+
+// SparseEmbedder encodes query text into the BM25 sparse vector used for hybrid retrieval.
+type SparseEmbedder interface {
+	SparseEmbed(ctx context.Context, text string) ([]uint32, []float32, error)
 }
 
 // Reranker scores (query, document) pairs with a cross-encoder, higher is more relevant.
@@ -91,6 +96,7 @@ type RAGPipeline struct {
 	qdrant                    QdrantQuerier
 	vllm                      VLLMCompleter
 	embedder                  Embedder
+	sparseEmbedder            SparseEmbedder
 	reranker                  Reranker
 	rerankEnabled             bool
 	rerankOverfetchMultiplier int
@@ -108,6 +114,7 @@ type DOCPipeline struct {
 	qdrant                    QdrantQuerier
 	vllm                      VLLMCompleter
 	embedder                  Embedder
+	sparseEmbedder            SparseEmbedder
 	reranker                  Reranker
 	rerankEnabled             bool
 	rerankOverfetchMultiplier int
@@ -193,6 +200,50 @@ func (p *DOCPipeline) WithLogger(log zerolog.Logger) *DOCPipeline {
 	return p
 }
 
+// WithSparseEmbedder enables hybrid dense+sparse retrieval; nil keeps dense-only retrieval.
+func (p *RAGPipeline) WithSparseEmbedder(sparse SparseEmbedder) *RAGPipeline {
+	p.sparseEmbedder = sparse
+	return p
+}
+
+func (p *DOCPipeline) WithSparseEmbedder(sparse SparseEmbedder) *DOCPipeline {
+	p.sparseEmbedder = sparse
+	return p
+}
+
+// queryVectors is the encoded retrieval query; empty sparse fields mean dense-only retrieval.
+type queryVectors struct {
+	dense         []float32
+	sparseIndices []uint32
+	sparseValues  []float32
+}
+
+// embedQuery encodes dense and sparse vectors concurrently. A sparse failure only
+// degrades retrieval to dense-only; a dense failure fails the request.
+func embedQuery(ctx context.Context, embedder Embedder, sparse SparseEmbedder, text string, log zerolog.Logger) (queryVectors, error) {
+	var vectors queryVectors
+	var sparseErr error
+	var wg sync.WaitGroup
+	if sparse != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			vectors.sparseIndices, vectors.sparseValues, sparseErr = sparse.SparseEmbed(ctx, text)
+		}()
+	}
+	dense, err := embedder.Embed(ctx, text)
+	wg.Wait()
+	if err != nil {
+		return queryVectors{}, err
+	}
+	vectors.dense = dense
+	if sparseErr != nil {
+		log.Warn().Err(sparseErr).Msg("sparse query encoding failed, falling back to dense-only retrieval")
+		vectors.sparseIndices, vectors.sparseValues = nil, nil
+	}
+	return vectors, nil
+}
+
 // Execute runs the full RAG pipeline for a single request. Standard summarizes what changed,
 // so it retrieves change_chunks only; every other request answers from the current
 // implementation, so it retrieves code_chunks only.
@@ -215,7 +266,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	} else {
 		req.AppProfile = resolveAppProfile(p.appProfileDir, p.appProfileFiles, req.RepoID, p.log)
 
-		vector, err := p.embedder.Embed(ctx, req.QueryText)
+		vectors, err := embedQuery(ctx, p.embedder, p.sparseEmbedder, req.QueryText, p.log)
 		if err != nil {
 			return nil, fmt.Errorf("embed: %w", err)
 		}
@@ -228,7 +279,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 			queryLimit = req.Limit * p.rerankOverfetchMultiplier
 		}
 
-		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, req.RepoID, req.Component, queryLimit)
+		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vectors.dense, vectors.sparseIndices, vectors.sparseValues, req.RepoID, req.Component, queryLimit)
 		if err != nil {
 			p.log.Warn().Err(err).Str("collection", p.codeCollection).Msg("qdrant query failed")
 		}
@@ -343,7 +394,7 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	req.AppProfile = resolveAppProfile(p.appProfileDir, p.appProfileFiles, req.RepoID, p.log)
 
 	// 1. Embed the query once
-	vector, err := p.embedder.Embed(ctx, req.QueryText)
+	vectors, err := embedQuery(ctx, p.embedder, p.sparseEmbedder, req.QueryText, p.log)
 	if err != nil {
 		return nil, fmt.Errorf("embed: %w", err)
 	}
@@ -367,12 +418,12 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vector, req.RepoID, req.Component, queryLimit)
+		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vectors.dense, vectors.sparseIndices, vectors.sparseValues, req.RepoID, req.Component, queryLimit)
 		codeCh <- result{chunks, err}
 	}()
 	go func() {
 		defer wg.Done()
-		chunks, err := p.qdrant.Query(ctx, p.docCollection, vector, req.RepoID, req.Component, queryLimit)
+		chunks, err := p.qdrant.Query(ctx, p.docCollection, vectors.dense, vectors.sparseIndices, vectors.sparseValues, req.RepoID, req.Component, queryLimit)
 		docCh <- result{chunks, err}
 	}()
 	wg.Wait()

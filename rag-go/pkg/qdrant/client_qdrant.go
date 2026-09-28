@@ -22,13 +22,16 @@ const (
 
 // Client wraps the Qdrant gRPC client.
 type Client struct {
-	points         qdrant.PointsClient
-	scoreThreshold float32
-	neighborStitch bool
-	mmrEnabled     bool
-	mmrLambda      float32
-	mmrOverfetch   int
-	log            zerolog.Logger
+	points           qdrant.PointsClient
+	scoreThreshold   float32
+	neighborStitch   bool
+	mmrEnabled       bool
+	mmrLambda        float32
+	mmrOverfetch     int
+	denseVectorName  string
+	sparseVectorName string
+	hybridPrefetch   int
+	log              zerolog.Logger
 }
 
 // NewClient dials Qdrant over gRPC. On failure it retries once after 120s.
@@ -39,27 +42,36 @@ type Client struct {
 // immediate previous/next chunk from the same file, to avoid mid-function truncation.
 // mmrLambda controls relevance versus diversity (1 is relevance-only, 0 is diversity-only).
 // mmrOverfetch is the candidate multiplier used before selecting the requested limit.
-func NewClient(host string, scoreThreshold float32, neighborStitch, mmrEnabled bool, mmrLambda float32, mmrOverfetch int, log zerolog.Logger) *Client {
+// denseVectorName empty targets an unnamed dense vector; sparseVectorName empty disables hybrid.
+// hybridPrefetch is the per-branch candidate multiplier fed into RRF fusion.
+func NewClient(host string, scoreThreshold float32, neighborStitch, mmrEnabled bool, mmrLambda float32, mmrOverfetch int, denseVectorName, sparseVectorName string, hybridPrefetch int, log zerolog.Logger) *Client {
 	if mmrLambda < 0 || mmrLambda > 1 {
 		mmrLambda = 0.7
 	}
 	if mmrOverfetch < 1 {
 		mmrOverfetch = 1
 	}
+	if hybridPrefetch < 1 {
+		hybridPrefetch = 1
+	}
+	client := &Client{
+		scoreThreshold:   scoreThreshold,
+		neighborStitch:   neighborStitch,
+		mmrEnabled:       mmrEnabled,
+		mmrLambda:        mmrLambda,
+		mmrOverfetch:     mmrOverfetch,
+		denseVectorName:  denseVectorName,
+		sparseVectorName: sparseVectorName,
+		hybridPrefetch:   hybridPrefetch,
+		log:              log,
+	}
 	conn, err := dialWithRetry(host, log)
 	if err != nil {
 		log.Error().Err(err).Str("host", host).Msg("qdrant unavailable, requests will fail until connectivity is restored")
-		return &Client{scoreThreshold: scoreThreshold, neighborStitch: neighborStitch, mmrEnabled: mmrEnabled, mmrLambda: mmrLambda, mmrOverfetch: mmrOverfetch, log: log}
+		return client
 	}
-	return &Client{
-		points:         qdrant.NewPointsClient(conn),
-		scoreThreshold: scoreThreshold,
-		neighborStitch: neighborStitch,
-		mmrEnabled:     mmrEnabled,
-		mmrLambda:      mmrLambda,
-		mmrOverfetch:   mmrOverfetch,
-		log:            log,
-	}
+	client.points = qdrant.NewPointsClient(conn)
+	return client
 }
 
 func dialWithRetry(host string, log zerolog.Logger) (*grpc.ClientConn, error) {
@@ -79,18 +91,19 @@ func dialWithRetry(host string, log zerolog.Logger) (*grpc.ClientConn, error) {
 }
 
 // Query retrieves text chunks from a collection filtered by repo_id.
-func (c *Client) Query(ctx context.Context, collection string, vector []float32, repoID, component string, limit int) ([]string, error) {
-	return c.query(ctx, collection, vector, repoID, component, limit, nil)
+// A non-empty sparse query switches to dense+sparse hybrid retrieval with RRF fusion.
+func (c *Client) Query(ctx context.Context, collection string, vector []float32, sparseIndices []uint32, sparseValues []float32, repoID, component string, limit int) ([]string, error) {
+	return c.query(ctx, collection, vector, sparseIndices, sparseValues, repoID, component, limit, nil)
 }
 
 // QueryStandard filters only change history by its inclusive date window.
-func (c *Client) QueryStandard(ctx context.Context, collection string, vector []float32, repoID, component string, limit int, fromDate, toDate, dateField string) ([]string, error) {
+func (c *Client) QueryStandard(ctx context.Context, collection string, vector []float32, sparseIndices []uint32, sparseValues []float32, repoID, component string, limit int, fromDate, toDate, dateField string) ([]string, error) {
 	dateFilters, err := standardDateFilters(fromDate, toDate, dateField)
 	if err != nil {
 		return nil, err
 	}
 
-	return c.query(ctx, collection, vector, repoID, component, limit, dateFilters[0].condition)
+	return c.query(ctx, collection, vector, sparseIndices, sparseValues, repoID, component, limit, dateFilters[0].condition)
 }
 
 // QueryStandardAll retrieves every change chunk in the requested inclusive date window.
@@ -235,7 +248,7 @@ func monthValues(from, to time.Time) []string {
 	return values
 }
 
-func (c *Client) query(ctx context.Context, collection string, vector []float32, repoID, component string, limit int, dateCondition *qdrant.Condition) ([]string, error) {
+func (c *Client) query(ctx context.Context, collection string, vector []float32, sparseIndices []uint32, sparseValues []float32, repoID, component string, limit int, dateCondition *qdrant.Condition) ([]string, error) {
 	if c.points == nil {
 		return nil, fmt.Errorf("qdrant client not initialised")
 	}
@@ -246,20 +259,50 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 		candidateLimit *= c.mmrOverfetch
 	}
 
+	hybrid := c.sparseVectorName != "" && len(sparseIndices) > 0 && len(sparseIndices) == len(sparseValues)
+
 	req := &qdrant.QueryPoints{
 		CollectionName: collection,
-		Query:          qdrant.NewQuery(vector...),
 		Filter: &qdrant.Filter{
 			Must: must,
 		},
 		Limit:       qdrant.PtrOf(uint64(candidateLimit)),
 		WithPayload: qdrant.NewWithPayload(true),
 	}
-	if c.mmrEnabled {
-		req.WithVectors = qdrant.NewWithVectors(true)
-	}
+	var threshold *float32
 	if c.scoreThreshold > 0 {
-		req.ScoreThreshold = qdrant.PtrOf(c.scoreThreshold)
+		threshold = qdrant.PtrOf(c.scoreThreshold)
+	}
+	if hybrid {
+		prefetchLimit := qdrant.PtrOf(uint64(candidateLimit * c.hybridPrefetch))
+		// Fused RRF scores are rank-based, so the cosine threshold only applies to the dense branch.
+		req.Prefetch = []*qdrant.PrefetchQuery{
+			{
+				Query:          qdrant.NewQueryDense(vector),
+				Using:          c.denseUsing(),
+				Filter:         &qdrant.Filter{Must: must},
+				ScoreThreshold: threshold,
+				Limit:          prefetchLimit,
+			},
+			{
+				Query:  qdrant.NewQuerySparse(sparseIndices, sparseValues),
+				Using:  qdrant.PtrOf(c.sparseVectorName),
+				Filter: &qdrant.Filter{Must: must},
+				Limit:  prefetchLimit,
+			},
+		}
+		req.Query = qdrant.NewQueryFusion(qdrant.Fusion_RRF)
+	} else {
+		req.Query = qdrant.NewQueryDense(vector)
+		req.Using = c.denseUsing()
+		req.ScoreThreshold = threshold
+	}
+	if c.mmrEnabled {
+		if c.denseVectorName != "" {
+			req.WithVectors = qdrant.NewWithVectorsInclude(c.denseVectorName)
+		} else {
+			req.WithVectors = qdrant.NewWithVectors(true)
+		}
 	}
 
 	resp, err := c.points.Query(ctx, req)
@@ -269,7 +312,7 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 
 	parsed := make([]parsedHit, 0, len(resp.Result))
 	vectorHits := 0
-	for _, hit := range resp.Result {
+	for rank, hit := range resp.Result {
 		if hit.Payload == nil {
 			continue
 		}
@@ -291,7 +334,16 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 			chunkIndex:    chunkIndex,
 			hasChunkIndex: hasChunkIndex,
 			score:         hit.Score,
-			vector:        denseVector(hit),
+			vector:        c.denseVector(hit),
+		}
+		switch {
+		case hybrid:
+			// Cosine would re-rank by dense similarity and bury sparse-only (exact identifier) hits.
+			candidate.relevance = 1 - float32(rank)/float32(len(resp.Result))
+		case len(candidate.vector) > 0:
+			candidate.relevance = cosine(vector, candidate.vector)
+		default:
+			candidate.relevance = hit.Score
 		}
 		if len(candidate.vector) > 0 {
 			vectorHits++
@@ -307,7 +359,7 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 
 	parsedBeforeMMR := len(parsed)
 	if c.mmrEnabled {
-		parsed = selectDiverse(parsed, vector, limit, c.mmrLambda)
+		parsed = selectDiverse(parsed, limit, c.mmrLambda)
 	}
 
 	if c.neighborStitch {
@@ -333,6 +385,8 @@ func (c *Client) query(ctx context.Context, collection string, vector []float32,
 		Float32("mmr_lambda", c.mmrLambda).
 		Int("mmr_overfetch", c.mmrOverfetch).
 		Bool("mmr_applied", c.mmrEnabled && parsedBeforeMMR > limit).
+		Bool("hybrid", hybrid).
+		Int("sparse_terms", len(sparseIndices)).
 		Float32("score_threshold", c.scoreThreshold).
 		Msg("qdrant query complete")
 
@@ -400,19 +454,30 @@ type parsedHit struct {
 	chunkIndex    int64
 	hasChunkIndex bool
 	score         float32
+	relevance     float32 // MMR relevance term: cosine to the query, or fused rank in hybrid mode
 	vector        []float32
 }
 
-func denseVector(hit *qdrant.ScoredPoint) []float32 {
-	if hit == nil || hit.Vectors == nil || hit.Vectors.GetVector() == nil {
+func (c *Client) denseUsing() *string {
+	if c.denseVectorName == "" {
 		return nil
+	}
+	return qdrant.PtrOf(c.denseVectorName)
+}
+
+func (c *Client) denseVector(hit *qdrant.ScoredPoint) []float32 {
+	if hit == nil || hit.Vectors == nil {
+		return nil
+	}
+	if c.denseVectorName != "" {
+		return hit.Vectors.GetVectors().GetVectors()[c.denseVectorName].GetDense().GetData()
 	}
 	return hit.Vectors.GetVector().GetDense().GetData()
 }
 
 // selectDiverse applies maximal marginal relevance and removes repeated chunk text.
 // If Qdrant does not return usable vectors, it still performs stable exact deduplication.
-func selectDiverse(hits []parsedHit, query []float32, limit int, lambda float32) []parsedHit {
+func selectDiverse(hits []parsedHit, limit int, lambda float32) []parsedHit {
 	if limit <= 0 || len(hits) <= limit {
 		return deduplicateHits(hits, limit)
 	}
@@ -422,18 +487,15 @@ func selectDiverse(hits []parsedHit, query []float32, limit int, lambda float32)
 		best := 0
 		bestValue := float32(-math.MaxFloat32)
 		for i, candidate := range remaining {
-			value := lambda * candidate.score
-			if len(candidate.vector) > 0 {
-				value = lambda * cosine(query, candidate.vector)
-				if len(selected) > 0 {
-					maxSimilarity := float32(-1)
-					for _, prior := range selected {
-						if similarity := cosine(candidate.vector, prior.vector); similarity > maxSimilarity {
-							maxSimilarity = similarity
-						}
+			value := lambda * candidate.relevance
+			if len(candidate.vector) > 0 && len(selected) > 0 {
+				maxSimilarity := float32(-1)
+				for _, prior := range selected {
+					if similarity := cosine(candidate.vector, prior.vector); similarity > maxSimilarity {
+						maxSimilarity = similarity
 					}
-					value -= (1 - lambda) * maxSimilarity
 				}
+				value -= (1 - lambda) * maxSimilarity
 			}
 			if value > bestValue {
 				best, bestValue = i, value
