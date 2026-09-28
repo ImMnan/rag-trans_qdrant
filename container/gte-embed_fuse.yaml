@@ -97,10 +97,17 @@ spec:
                 cache_dir='/models/hub',
                 local_dir_use_symlinks=False,
             )
+            # BM25 tokenizer resources for the /sparse endpoint (hybrid retrieval query encoding).
+            snapshot_download(
+                'Qdrant/bm25',
+                cache_dir='/models/hub',
+                local_dir_use_symlinks=False,
+            )
             PY
             test -d /models/hub/models--Alibaba-NLP--gte-Qwen2-1.5B-instruct
             test -d /models/hub/models--Alibaba-NLP--gte-multilingual-reranker-base
             test -d /models/hub/models--Alibaba-NLP--new-impl
+            test -d /models/hub/models--Qdrant--bm25
             ls -la /models/hub | head -n 40
         volumeMounts:
         - name: model-cache

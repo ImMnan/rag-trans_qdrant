@@ -14,6 +14,7 @@ spec:
     app: embed-e5large
   sessionAffinity: None
   type: ClusterIP
+
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -90,6 +91,7 @@ spec:
           limits:
             cpu: "2"
             memory: 8Gi  
+
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
