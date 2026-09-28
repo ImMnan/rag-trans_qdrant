@@ -105,3 +105,47 @@ func (c *GTEQwenClient) Rerank(ctx context.Context, query string, documents []st
 	c.log.Debug().Str("client_type", "gte-qwen").Int("scored", len(result.Scores)).Msg("rerank scores received")
 	return result.Scores, nil
 }
+
+type sparseRequest struct {
+	Text string `json:"text"`
+}
+
+type sparseResponse struct {
+	Indices []uint32  `json:"indices"`
+	Values  []float32 `json:"values"`
+}
+
+// SparseEmbed encodes query text into the BM25 sparse vector used for hybrid retrieval.
+func (c *GTEQwenClient) SparseEmbed(ctx context.Context, text string) ([]uint32, []float32, error) {
+	body, err := json.Marshal(sparseRequest{Text: text})
+	if err != nil {
+		return nil, nil, fmt.Errorf("marshal sparse request: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/sparse", bytes.NewReader(body))
+	if err != nil {
+		return nil, nil, fmt.Errorf("create sparse request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("sparse request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, nil, fmt.Errorf("sparse service returned %d", resp.StatusCode)
+	}
+
+	var result sparseResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, nil, fmt.Errorf("decode sparse response: %w", err)
+	}
+	if len(result.Indices) != len(result.Values) {
+		return nil, nil, fmt.Errorf("sparse response has %d indices but %d values", len(result.Indices), len(result.Values))
+	}
+
+	c.log.Debug().Str("client_type", "gte-qwen").Int("sparse_terms", len(result.Indices)).Msg("sparse embedding received")
+	return result.Indices, result.Values, nil
+}
