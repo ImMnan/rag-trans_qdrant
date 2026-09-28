@@ -21,6 +21,10 @@ type config struct {
 	QdrantMMREnabled          bool
 	QdrantMMRLambda           float32
 	QdrantMMROverfetch        int
+	QdrantHybridEnabled       bool
+	QdrantDenseVectorName     string
+	QdrantSparseVectorName    string
+	QdrantHybridPrefetch      int
 	RerankEnabled             bool
 	RerankOverfetchMultiplier int
 	ContextTruncationEnabled  bool
@@ -43,18 +47,23 @@ func loadConfig() (config, error) {
 	}
 
 	return config{
-		FiberPort:                 getEnv("FIBER_PORT", "8080"),
-		ReadTimeout:               getEnvDuration("FIBER_READ_TIMEOUT", 30*time.Second),
-		WriteTimeout:              getEnvDuration("FIBER_WRITE_TIMEOUT", 120*time.Second),
-		IdleTimeout:               getEnvDuration("FIBER_IDLE_TIMEOUT", 60*time.Second),
-		VLLMTimeout:               getEnvDuration("VLLM_TIMEOUT", 120*time.Second),
-		EmbedTimeout:              getEnvDuration("EMBED_TIMEOUT", 60*time.Second),
-		QdrantHost:                normalizeHostPort(getEnv("QDRANT_HOST", "qdrant-service"), 6334),
-		QdrantScoreThreshold:      getEnvFloat32("QDRANT_SCORE_THRESHOLD", 0),
-		QdrantNeighborStitch:      getEnvBool("QDRANT_NEIGHBOR_STITCH", true),
-		QdrantMMREnabled:          getEnvBool("QDRANT_MMR_ENABLED", true),
-		QdrantMMRLambda:           getEnvFloat32("QDRANT_MMR_LAMBDA", 0.7),
-		QdrantMMROverfetch:        getEnvInt("QDRANT_MMR_OVERFETCH", 3),
+		FiberPort:            getEnv("FIBER_PORT", "8080"),
+		ReadTimeout:          getEnvDuration("FIBER_READ_TIMEOUT", 30*time.Second),
+		WriteTimeout:         getEnvDuration("FIBER_WRITE_TIMEOUT", 120*time.Second),
+		IdleTimeout:          getEnvDuration("FIBER_IDLE_TIMEOUT", 60*time.Second),
+		VLLMTimeout:          getEnvDuration("VLLM_TIMEOUT", 120*time.Second),
+		EmbedTimeout:         getEnvDuration("EMBED_TIMEOUT", 60*time.Second),
+		QdrantHost:           normalizeHostPort(getEnv("QDRANT_HOST", "qdrant-service"), 6334),
+		QdrantScoreThreshold: getEnvFloat32("QDRANT_SCORE_THRESHOLD", 0),
+		QdrantNeighborStitch: getEnvBool("QDRANT_NEIGHBOR_STITCH", true),
+		QdrantMMREnabled:     getEnvBool("QDRANT_MMR_ENABLED", true),
+		QdrantMMRLambda:      getEnvFloat32("QDRANT_MMR_LAMBDA", 0.7),
+		QdrantMMROverfetch:   getEnvInt("QDRANT_MMR_OVERFETCH", 3),
+		QdrantHybridEnabled:  getEnvBool("QDRANT_HYBRID_ENABLED", true),
+		// Set to "" only for legacy collections created with a single unnamed dense vector.
+		QdrantDenseVectorName:     getEnvAllowEmpty("QDRANT_DENSE_VECTOR_NAME", "dense"),
+		QdrantSparseVectorName:    getEnv("QDRANT_SPARSE_VECTOR_NAME", "sparse"),
+		QdrantHybridPrefetch:      getEnvInt("QDRANT_HYBRID_PREFETCH_MULTIPLIER", 2),
 		RerankEnabled:             getEnvBool("RERANK_ENABLED", false),
 		RerankOverfetchMultiplier: getEnvInt("RERANK_OVERFETCH_MULTIPLIER", 4),
 		ContextTruncationEnabled:  getEnvBool("CONTEXT_TRUNCATION_ENABLED", true),
@@ -133,6 +142,14 @@ func normalizeListenAddr(port string) string {
 func getEnv(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+// getEnvAllowEmpty treats an explicitly set empty value as a real value, not as unset.
+func getEnvAllowEmpty(key, fallback string) string {
+	if v, ok := os.LookupEnv(key); ok {
+		return strings.TrimSpace(v)
 	}
 	return fallback
 }

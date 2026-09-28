@@ -43,6 +43,10 @@ func main() {
 		Bool("qdrant_mmr_enabled", cfg.QdrantMMREnabled).
 		Float32("qdrant_mmr_lambda", cfg.QdrantMMRLambda).
 		Int("qdrant_mmr_overfetch", cfg.QdrantMMROverfetch).
+		Bool("qdrant_hybrid_enabled", cfg.QdrantHybridEnabled).
+		Str("qdrant_dense_vector", cfg.QdrantDenseVectorName).
+		Str("qdrant_sparse_vector", cfg.QdrantSparseVectorName).
+		Int("qdrant_hybrid_prefetch", cfg.QdrantHybridPrefetch).
 		Bool("context_truncation_enabled", cfg.ContextTruncationEnabled).
 		Bool("rerank", cfg.RerankEnabled).
 		Int("rerank_overfetch", cfg.RerankOverfetchMultiplier).
@@ -54,14 +58,22 @@ func main() {
 		Msg("starting Orca service")
 
 	// --- Clients ---
-	qdrantClient := qdrant.NewClient(cfg.QdrantHost, cfg.QdrantScoreThreshold, cfg.QdrantNeighborStitch, cfg.QdrantMMREnabled, cfg.QdrantMMRLambda, cfg.QdrantMMROverfetch, log.Logger)
+	qdrantClient := qdrant.NewClient(cfg.QdrantHost, cfg.QdrantScoreThreshold, cfg.QdrantNeighborStitch, cfg.QdrantMMREnabled, cfg.QdrantMMRLambda, cfg.QdrantMMROverfetch, cfg.QdrantDenseVectorName, cfg.QdrantSparseVectorName, cfg.QdrantHybridPrefetch, log.Logger)
 	embedClient := embedder.NewClientFromType(cfg.EmbedClientType, buildHTTPURL(cfg.EmbedHost), cfg.EmbedTimeout, log.Logger)
+	var sparseEmbedder pipeline.SparseEmbedder
+	if cfg.QdrantHybridEnabled {
+		if s, ok := embedClient.(pipeline.SparseEmbedder); ok {
+			sparseEmbedder = s
+		} else {
+			log.Warn().Str("embed_client_type", cfg.EmbedClientType).Msg("embed client has no sparse encoder, using dense-only retrieval")
+		}
+	}
 	log.Info().Str("url", buildHTTPURL(cfg.VLLMHost)).Msg("vllm transport: http")
 	vllmClient := vllm.NewHTTPClient(buildHTTPURL(cfg.VLLMHost), cfg.ModelName, cfg.VLLMTimeout, log.Logger)
 
 	// --- Pipeline ---
-	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, embedClient, cfg.RerankEnabled, cfg.RerankOverfetchMultiplier, cfg.ContextTruncationEnabled, cfg.ChangeCollection, cfg.CodeCollection, cfg.ChangeDateField, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
-	docPipe := pipeline.NewDoc(qdrantClient, vllmClient, embedClient, embedClient, cfg.RerankEnabled, cfg.RerankOverfetchMultiplier, cfg.ContextTruncationEnabled, cfg.CodeCollection, cfg.DocCollection, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger)
+	pipe := pipeline.New(qdrantClient, vllmClient, embedClient, embedClient, cfg.RerankEnabled, cfg.RerankOverfetchMultiplier, cfg.ContextTruncationEnabled, cfg.ChangeCollection, cfg.CodeCollection, cfg.ChangeDateField, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger).WithSparseEmbedder(sparseEmbedder)
+	docPipe := pipeline.NewDoc(qdrantClient, vllmClient, embedClient, embedClient, cfg.RerankEnabled, cfg.RerankOverfetchMultiplier, cfg.ContextTruncationEnabled, cfg.CodeCollection, cfg.DocCollection, cfg.AppProfileDir, cfg.AppProfileFiles).WithLogger(log.Logger).WithSparseEmbedder(sparseEmbedder)
 
 	// --- Fiber app ---
 	app := fiber.New(fiber.Config{
