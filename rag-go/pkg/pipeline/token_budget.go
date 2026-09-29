@@ -1,5 +1,10 @@
 package pipeline
 
+import (
+	"strings"
+	"unicode/utf8"
+)
+
 const (
 	defaultModelContextTokens = 32768
 	defaultSafetyTokens       = 2048
@@ -22,6 +27,10 @@ const (
 
 	// charsPerToken is the rough ratio used throughout this file.
 	charsPerToken = 4
+
+	// standardCharsPerToken is deliberately conservative: diffs tokenize denser than prose
+	// (~3.7 chars/token observed), and charsPerToken under-counted enough to overflow vLLM.
+	standardCharsPerToken = 3
 
 	// promptOverheadTokens reserves room for the fixed prompt rules plus the facts and audit
 	// JSON that sit alongside retrieved chunks in the largest doc-workflow call.
@@ -153,18 +162,91 @@ func ResolveDocStepTokenBudget(req Request, stepName string, messages []Message)
 }
 
 func estimateMessageTokens(messages []Message) int {
+	return estimateMessageTokensAt(messages, charsPerToken)
+}
+
+func estimateMessageTokensAt(messages []Message, charsPerTok int) int {
 	if len(messages) == 0 {
 		return 0
 	}
 
 	tokens := 0
 	for _, m := range messages {
-		// Rough approximation: ~4 chars/token + chat formatting overhead.
-		tokens += (len(m.Content) / 4) + 6
+		// Content tokens + chat formatting overhead.
+		tokens += (len(m.Content) / charsPerTok) + 6
 	}
 
 	// Small fixed overhead for request framing.
 	return tokens + 12
+}
+
+// resolveStandardTokenBudget is ResolveTokenBudget using the conservative diff estimate.
+func resolveStandardTokenBudget(req Request, messages []Message) int {
+	if req.TokenLimit > 0 {
+		return clampInt(req.TokenLimit, minRequestTokenLimit, maxRequestTokenLimit)
+	}
+	available := defaultModelContextTokens - estimateMessageTokensAt(messages, standardCharsPerToken) - defaultSafetyTokens
+	return clampInt(available, minAutoBudgetTokens, maxAutoBudgetTokens)
+}
+
+// standardChunkTokenBudget is the room left for chunks once the fixed prompt and output are reserved.
+func standardChunkTokenBudget(req Request, fixed []Message) int {
+	output := minGenerateOutputTokens
+	if req.TokenLimit > 0 {
+		output = clampInt(req.TokenLimit, minRequestTokenLimit, maxRequestTokenLimit)
+	}
+	budget := defaultModelContextTokens - defaultSafetyTokens - output - estimateMessageTokensAt(fixed, standardCharsPerToken)
+	return max(budget, minAutoBudgetTokens)
+}
+
+// packChunksByTokens groups chunks, in order, into batches that each fit budgetTokens.
+// Nothing is dropped: a chunk larger than the budget is split at line boundaries.
+// Always returns at least one (possibly empty) batch.
+func packChunksByTokens(chunks []string, budgetTokens int) [][]string {
+	budgetChars := budgetTokens * standardCharsPerToken
+	batches := [][]string{}
+	var current []string
+	used := 0
+	for _, chunk := range chunks {
+		for _, piece := range splitChunkToChars(chunk, budgetChars) {
+			size := len(piece) + 5 // + "\n---\n" separator
+			if used+size > budgetChars && len(current) > 0 {
+				batches = append(batches, current)
+				current, used = nil, 0
+			}
+			current = append(current, piece)
+			used += size
+		}
+	}
+	if len(current) > 0 || len(batches) == 0 {
+		batches = append(batches, current)
+	}
+	return batches
+}
+
+// splitChunkToChars splits an oversize chunk into consecutive pieces of at most maxChars,
+// preferring line boundaries so diff hunks stay readable.
+func splitChunkToChars(chunk string, maxChars int) []string {
+	if len(chunk)+5 <= maxChars || maxChars <= 0 {
+		return []string{chunk}
+	}
+	limit := maxChars - 5
+	var pieces []string
+	for len(chunk) > limit {
+		cut := strings.LastIndexByte(chunk[:limit], '\n')
+		if cut <= 0 {
+			cut = limit
+			for cut > 0 && !utf8.RuneStart(chunk[cut]) {
+				cut--
+			}
+		}
+		pieces = append(pieces, chunk[:cut])
+		chunk = strings.TrimPrefix(chunk[cut:], "\n")
+	}
+	if chunk != "" {
+		pieces = append(pieces, chunk)
+	}
+	return pieces
 }
 
 func clampInt(v, minV, maxV int) int {

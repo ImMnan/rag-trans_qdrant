@@ -143,6 +143,28 @@ func buildStandardFormatRepairPrompt(answer string) []Message {
 	}
 }
 
+// buildStandardMergePrompt combines partial standard summaries, each covering a disjoint
+// slice of the same change set, into one answer.
+func buildStandardMergePrompt(req Request, partials []string) []Message {
+	systemPrompt := "You are a senior engineer producing product release summaries. " +
+		"The change set was too large for one pass, so it was split into disjoint slices and each slice was summarized separately. " +
+		"Merge those partial summaries into ONE summary of the whole change set.\n" +
+		"Merge rules:\n" +
+		"- Keep every distinct change, impact, and security/performance item from every partial. Never drop an item because it appears in only one partial.\n" +
+		"- Deduplicate items that describe the same change, keeping the most specific wording and all cited file paths.\n" +
+		"- Never add facts that are not in the partials.\n" +
+		"- Ignore a partial's 'No changes found' or 'None identified' fallback when another partial has real content for that section.\n\n" +
+		standardFormatContract
+
+	userPrompt := fmt.Sprintf("## Reporting Window\n%s to %s\n\n## Partial Summaries (separated by ---)\n%s\n\n## Request\n%s",
+		req.FromDate, req.ToDate, joinChunks(partials, "No partial summaries."), req.QueryText)
+
+	return []Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: userPrompt},
+	}
+}
+
 // mergeEvidenceChunks tags each code chunk with its origin so the model can still cite
 // source per fact.
 func mergeEvidenceChunks(codeChunks []string) []string {
