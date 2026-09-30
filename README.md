@@ -105,6 +105,15 @@ single workflow. The handler owns the terminal `complete` event, so pipeline cod
 should only report work milestones. Without `stream=true`, the endpoints retain the
 original single JSON response.
 
+Standard change-summary requests (`type: "standard"`) retrieve all change chunks in
+the requested date range without dropping chunks to fit the model context window. If
+the change set is too large for one request, Orca splits it into batches, summarizes
+each batch, and merges the partial summaries into one answer. Batch summaries and
+merge calls run concurrently, with at most four vLLM requests in flight per query.
+If a batch still exceeds the context limit, Orca splits and retries that batch.
+The response's `sources.change_batches` value reports the number of initial batches
+used; it is `1` when all change context fits in one request.
+
 
 
 ### Hybrid retrieval
@@ -149,3 +158,16 @@ existing points: rerun ingestion for the code, change, and documentation collect
 using the ingestion repository's full-reingest procedure before enabling hybrid
 queries. Standard change-summary requests continue to scroll all change chunks in
 the requested date range rather than using vector search.
+
+
+## 
+
+- Grounding
+- Security
+- Data quality
+
+- Context
+     - size
+     - ACL
+     - Freshness
+     - Relevance
