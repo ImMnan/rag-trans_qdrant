@@ -1,5 +1,54 @@
 ## rag-trans_qdrant
 
+**HOW THIS ALL WORKS**
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                             1. REPOSITORIES & GITOPS LIFECYCLE                                          │
+│                                                                                                                         │
+│  [ Developer Git Push ] ───> [ ImMnan/helm-rag_vLLM ] ───> [ ArgoCD Controller ] ───> Declares State & Reconciles Drift │
+└─────────────────────────────────────────────────────────────┬───────────────────────────────────────────────────────────┘
+                                                              │
+                                                              ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                             2. KUBERNETES TARGET CLUSTER (HA NAMESPACE)                                 │
+│                                                                                                                         │
+│    [ External Ingress (HTTPS) ]                                                                                         │
+│                 │                                                                                                       │
+│                 ▼  (K8s Core Service Routing / ClusterIP)                                                               │
+│        ┌──────────────────┐                                                                                             │
+│        │  Hawk UI Pod     │                                                                                             │
+│        │  (NextJS/Web)    │                                                                                             │
+│        └────────┬─────────┘                                                                                             │
+│                 │                                                                                                       │
+│                 ▼ (Internal HTTP/REST Protocol Route)                                                                   │
+│        ┌────────────────────────────────────────────────────────────────────────────────────────┐                       │
+│        │  Hawk API Server (Routing & Auth Gateway Pod)                                          │                       │
+│        └────────┬───────────────────────────────────────────────────────────────────────┬───────┘                       │
+│                 │                                                                       │                               │
+│                 │ (Low-latency Internal Pod-to-Pod Network)                             │ (gRPC Data Stream)            │
+│                 ▼                                                                       ▼                               │
+│  ┌──────────────────────────────────────────────────────┐                ┌───────────────────────────────┐              │
+│  │ Orca Core Engine Pods (Written in Go)                │                │ Decoupled Embedding Model     │              │
+│  │ [rag-trans_qdrant Workload Layer]                    │                │ (HuggingFace/Local Worker)    │              │
+│  └──────────────┬────────────────────────┬──────────────┘                └──────────────┬────────────────┘              │
+│                 │                        │                                              │                               │
+│                 │ (Vector Search)        │ (Context Injected Prompt)                    │ (Generate Dense Vectors)      │
+│                 ▼                        ▼                                              │                               │
+│        ┌────────────────┐       ┌────────────────────────┐                              │                               │
+│        │ Qdrant Pods    │       │ vLLM Inference Engine  │ <────────────────────────────┘                               │
+│        │ (Vector DB)    │       │ (Distributed LLM Pods) │                                                              │
+│        └────────┬───────┘       └───────────┬────────────┘                                                              │
+│                 │                           │                                                                           │
+└─────────────────┼───────────────────────────┼───────────────────────────────────────────────────────────────────────────┘
+                  │                           │
+                  ▼                           ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│                                             3. PERSISTENT STORAGE LAYER                                                 │
+│                                                                                                                         │
+│   [ Dynamic CSI Provisioner ] ───> [ PersistentVolumeClaims (PVC) ] ───> Block Storage (Indexes / Weights Data Paths)   │
+└─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
 ### Download the model from HuggingFace Hub & Uploading to GCP bucket
 
 ```bash
@@ -160,19 +209,6 @@ queries. Standard change-summary requests continue to scroll all change chunks i
 the requested date range rather than using vector search.
 
 
-## 
-
-- Grounding
-- Security
-- Data quality
-
-- Context
-     - size
-     - ACL
-     - Freshness
-     - Relevance
-
-
 ## 1. Retrieval is dense-only, no score filtering - DONE
 `query()` builds a `QueryPoints` request with no `ScoreThreshold` and never inspects `hit.Score` beyond a debug log. That means:
 - Every query always returns up to `limit` chunks even if the best match is a poor cosine match — irrelevant chunks get shipped to the LLM and consume budget/attention.
@@ -182,7 +218,7 @@ the requested date range rather than using vector search.
 The payload has no sparse/BM25-friendly field (e.g., no keyword/sparse vector), so retrieval is 100% dense embedding similarity. Dense embeddings are weak on exact identifiers — function names, error codes, env var names, config keys (`VLLM_TIMEOUT`, `EMBED_TIMEOUT`, specific commit SHAs) — which this codebase clearly cares about (per your own memory notes about exact-match filtering like `repo_id`).
 - **Improvement:** add a sparse vector (Qdrant supports named sparse vectors) generated from BM25/SPLADE over `text`, and do a hybrid query (RRF fusion) in Qdrant. This alone often gives the largest retrieval-quality jump for code/config-heavy corpora.
 
-## 3. No cross-encoder reranking - DONE - NOT used, need GPU
+## 3. No cross-encoder reranking - DONE 
 Right now the top-K from Qdrant is used as-is. Bi-encoder similarity is good for recall, poor for precision at the top.
 - **Improvement:** retrieve a larger candidate pool (e.g., `limit*4`) then rerank with a cross-encoder (or even use the LLM itself for cheap listwise reranking) before truncating to the final chunks that go into the prompt. This is usually the single highest-ROI change for RAG accuracy.
 
