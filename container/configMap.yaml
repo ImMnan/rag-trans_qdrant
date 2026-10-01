@@ -73,7 +73,7 @@ data:
     Application profile: github.com/Blazemeter/helm-crane
 
     Use case:
-    This repository is a Helm chart for deploying crane - Blazemeter OPL into a Kubernetes cluster. Users install the chart, configure values.yaml, and then run the chart to deploy the private location and its supporting resources.
+    This repository is a Helm chart for deploying crane - Blazemeter OPL into a Kubernetes cluster. Users install the chart via downloading the chart - github.com/Blazemeter/helm-crane/releases, configure values.yaml, and then run the chart to deploy the private location and its supporting resources.
 
     Primary user goal:
     Install & configure the BlazeMeter Private Location deployment in Kubernetes using Helm and Kubernetes configuration, without modifying the chart source code.
