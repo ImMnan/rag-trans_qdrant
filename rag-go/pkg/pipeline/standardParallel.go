@@ -8,7 +8,7 @@ import (
 
 // maxParallelLLMCalls caps concurrent vLLM requests per standard query so one large
 // window cannot monopolize the model server.
-const maxParallelLLMCalls = 4
+const maxParallelLLMCalls = 10
 
 // answerStandard summarizes every change chunk without truncation. When the change set does
 // not fit one context window it is split into batches (map), each summarized with the normal
