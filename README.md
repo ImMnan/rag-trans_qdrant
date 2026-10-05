@@ -158,6 +158,10 @@ Standard change-summary requests (`type: "standard"`) retrieve all change chunks
 the requested date range without dropping chunks to fit the model context window. If
 the change set is too large for one request, Orca splits it into batches, summarizes
 each batch, and merges the partial summaries into one answer. 
+Date filtering includes both requested boundary dates and combines precise `date`
+and `date_short` matches (plus a configured custom timestamp field). It never adds
+month-wide matches. `CHANGE_DATE_FIELD=month` uses `date` and `date_short` instead;
+payloads with only `month` cannot establish membership in a day-level window.
 Batch summaries and merge calls run concurrently, with at most four vLLM requests in flight per query.
 If a batch still exceeds the context limit, Orca splits and retries that batch.
 The response's `sources.change_batches` value reports the number of initial batches

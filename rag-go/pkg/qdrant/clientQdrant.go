@@ -202,10 +202,13 @@ func effectiveDateField(dateField string) string {
 }
 
 func orderedDateFields(dateField string) []string {
-	fields := []string{effectiveDateField(dateField), "date", "date_short", "month"}
+	fields := []string{effectiveDateField(dateField), "date", "date_short"}
 	seen := make(map[string]struct{}, len(fields))
 	ordered := make([]string, 0, len(fields))
 	for _, field := range fields {
+		if field == "month" {
+			continue
+		}
 		if _, exists := seen[field]; exists {
 			continue
 		}
@@ -219,8 +222,6 @@ func dateConditionForField(field string, from, to time.Time) *qdrant.Condition {
 	switch field {
 	case "date_short":
 		return qdrant.NewMatchKeywords(field, dateShortValues(from, to)...)
-	case "month":
-		return qdrant.NewMatchKeywords(field, monthValues(from, to)...)
 	default:
 		return qdrant.NewDatetimeRange(field, &qdrant.DatetimeRange{
 			Gte: timestamppb.New(from.UTC()),
@@ -233,17 +234,6 @@ func dateShortValues(from, to time.Time) []string {
 	values := make([]string, 0, int(to.Sub(from).Hours()/24)+1)
 	for day := from; !day.After(to); day = day.AddDate(0, 0, 1) {
 		values = append(values, day.Format("2006-01-02"))
-	}
-	return values
-}
-
-func monthValues(from, to time.Time) []string {
-	month := time.Date(from.Year(), from.Month(), 1, 0, 0, 0, 0, time.UTC)
-	end := time.Date(to.Year(), to.Month(), 1, 0, 0, 0, 0, time.UTC)
-	values := []string{}
-	for !month.After(end) {
-		values = append(values, month.Format("2006-01"))
-		month = month.AddDate(0, 1, 0)
 	}
 	return values
 }
