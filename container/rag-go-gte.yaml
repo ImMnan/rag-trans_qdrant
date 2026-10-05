@@ -45,6 +45,8 @@ spec:
         env:
         - name: QDRANT_HOST
           value: "qdrant-service.hawk.svc.cluster.local:6334"
+        - name: QDRANT_MAX_CALL_RECV_MSG_KB
+          value: "16384"
         - name: VLLM_HOST
           value: "qwen-3-service.hawk.svc.cluster.local:80"
         - name: EMBED_SERVICE_TYPE
