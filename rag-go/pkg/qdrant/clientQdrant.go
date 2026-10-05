@@ -44,7 +44,7 @@ type Client struct {
 // mmrOverfetch is the candidate multiplier used before selecting the requested limit.
 // denseVectorName empty targets an unnamed dense vector; sparseVectorName empty disables hybrid.
 // hybridPrefetch is the per-branch candidate multiplier fed into RRF fusion.
-func NewClient(host string, scoreThreshold float32, neighborStitch, mmrEnabled bool, mmrLambda float32, mmrOverfetch int, denseVectorName, sparseVectorName string, hybridPrefetch int, log zerolog.Logger) *Client {
+func NewClient(host string, maxCallRecvMsgSizeKB int, scoreThreshold float32, neighborStitch, mmrEnabled bool, mmrLambda float32, mmrOverfetch int, denseVectorName, sparseVectorName string, hybridPrefetch int, log zerolog.Logger) *Client {
 	if mmrLambda < 0 || mmrLambda > 1 {
 		mmrLambda = 0.7
 	}
@@ -65,7 +65,7 @@ func NewClient(host string, scoreThreshold float32, neighborStitch, mmrEnabled b
 		hybridPrefetch:   hybridPrefetch,
 		log:              log,
 	}
-	conn, err := dialWithRetry(host, log)
+	conn, err := dialWithRetry(host, maxCallRecvMsgSizeKB*1024, log)
 	if err != nil {
 		log.Error().Err(err).Str("host", host).Msg("qdrant unavailable, requests will fail until connectivity is restored")
 		return client
@@ -74,11 +74,11 @@ func NewClient(host string, scoreThreshold float32, neighborStitch, mmrEnabled b
 	return client
 }
 
-func dialWithRetry(host string, log zerolog.Logger) (*grpc.ClientConn, error) {
+func dialWithRetry(host string, maxCallRecvMsgSize int, log zerolog.Logger) (*grpc.ClientConn, error) {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		conn, err := grpc.NewClient(host,
 			grpc.WithTransportCredentials(insecure.NewCredentials()),
-			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(16*1024*1024)),
+			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(maxCallRecvMsgSize)),
 		)
 		if err == nil {
 			log.Info().Str("host", host).Msg("qdrant gRPC connection established")

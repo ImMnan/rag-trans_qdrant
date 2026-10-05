@@ -39,6 +39,7 @@ func main() {
 	log.Info().
 		Str("port", cfg.FiberPort).
 		Str("qdrant_host", cfg.QdrantHost).
+		Int("qdrant_max_call_recv_msg_size_kb", cfg.QdrantMaxCallRecvMsgSizeKB).
 		Float32("qdrant_score_threshold", cfg.QdrantScoreThreshold).
 		Bool("qdrant_mmr_enabled", cfg.QdrantMMREnabled).
 		Float32("qdrant_mmr_lambda", cfg.QdrantMMRLambda).
@@ -58,7 +59,7 @@ func main() {
 		Msg("starting Orca service")
 
 	// --- Clients ---
-	qdrantClient := qdrant.NewClient(cfg.QdrantHost, cfg.QdrantScoreThreshold, cfg.QdrantNeighborStitch, cfg.QdrantMMREnabled, cfg.QdrantMMRLambda, cfg.QdrantMMROverfetch, cfg.QdrantDenseVectorName, cfg.QdrantSparseVectorName, cfg.QdrantHybridPrefetch, log.Logger)
+	qdrantClient := qdrant.NewClient(cfg.QdrantHost, cfg.QdrantMaxCallRecvMsgSizeKB, cfg.QdrantScoreThreshold, cfg.QdrantNeighborStitch, cfg.QdrantMMREnabled, cfg.QdrantMMRLambda, cfg.QdrantMMROverfetch, cfg.QdrantDenseVectorName, cfg.QdrantSparseVectorName, cfg.QdrantHybridPrefetch, log.Logger)
 	embedClient := embedder.NewClientFromType(cfg.EmbedClientType, buildHTTPURL(cfg.EmbedHost), cfg.EmbedTimeout, log.Logger)
 	var sparseEmbedder pipeline.SparseEmbedder
 	if cfg.QdrantHybridEnabled {

@@ -9,35 +9,36 @@ import (
 )
 
 type config struct {
-	FiberPort                 string
-	ReadTimeout               time.Duration
-	WriteTimeout              time.Duration
-	IdleTimeout               time.Duration
-	VLLMTimeout               time.Duration
-	EmbedTimeout              time.Duration
-	QdrantHost                string // host or host:port
-	QdrantScoreThreshold      float32
-	QdrantNeighborStitch      bool
-	QdrantMMREnabled          bool
-	QdrantMMRLambda           float32
-	QdrantMMROverfetch        int
-	QdrantHybridEnabled       bool
-	QdrantDenseVectorName     string
-	QdrantSparseVectorName    string
-	QdrantHybridPrefetch      int
-	RerankEnabled             bool
-	RerankOverfetchMultiplier int
-	ContextTruncationEnabled  bool
-	VLLMHost                  string // host or host:port
-	EmbedClientType           string
-	EmbedHost                 string // host or host:port
-	ModelName                 string
-	ChangeCollection          string
-	ChangeDateField           string
-	CodeCollection            string
-	DocCollection             string
-	AppProfileDir             string
-	AppProfileFiles           map[string]string
+	FiberPort                  string
+	ReadTimeout                time.Duration
+	WriteTimeout               time.Duration
+	IdleTimeout                time.Duration
+	VLLMTimeout                time.Duration
+	EmbedTimeout               time.Duration
+	QdrantHost                 string // host or host:port
+	QdrantMaxCallRecvMsgSizeKB int
+	QdrantScoreThreshold       float32
+	QdrantNeighborStitch       bool
+	QdrantMMREnabled           bool
+	QdrantMMRLambda            float32
+	QdrantMMROverfetch         int
+	QdrantHybridEnabled        bool
+	QdrantDenseVectorName      string
+	QdrantSparseVectorName     string
+	QdrantHybridPrefetch       int
+	RerankEnabled              bool
+	RerankOverfetchMultiplier  int
+	ContextTruncationEnabled   bool
+	VLLMHost                   string // host or host:port
+	EmbedClientType            string
+	EmbedHost                  string // host or host:port
+	ModelName                  string
+	ChangeCollection           string
+	ChangeDateField            string
+	CodeCollection             string
+	DocCollection              string
+	AppProfileDir              string
+	AppProfileFiles            map[string]string
 }
 
 func loadConfig() (config, error) {
@@ -47,19 +48,20 @@ func loadConfig() (config, error) {
 	}
 
 	return config{
-		FiberPort:            getEnv("FIBER_PORT", "8080"),
-		ReadTimeout:          getEnvDuration("FIBER_READ_TIMEOUT", 30*time.Second),
-		WriteTimeout:         getEnvDuration("FIBER_WRITE_TIMEOUT", 120*time.Second),
-		IdleTimeout:          getEnvDuration("FIBER_IDLE_TIMEOUT", 60*time.Second),
-		VLLMTimeout:          getEnvDuration("VLLM_TIMEOUT", 120*time.Second),
-		EmbedTimeout:         getEnvDuration("EMBED_TIMEOUT", 60*time.Second),
-		QdrantHost:           normalizeHostPort(getEnv("QDRANT_HOST", "qdrant-service"), 6334),
-		QdrantScoreThreshold: getEnvFloat32("QDRANT_SCORE_THRESHOLD", 0),
-		QdrantNeighborStitch: getEnvBool("QDRANT_NEIGHBOR_STITCH", true),
-		QdrantMMREnabled:     getEnvBool("QDRANT_MMR_ENABLED", true),
-		QdrantMMRLambda:      getEnvFloat32("QDRANT_MMR_LAMBDA", 0.7),
-		QdrantMMROverfetch:   getEnvInt("QDRANT_MMR_OVERFETCH", 3),
-		QdrantHybridEnabled:  getEnvBool("QDRANT_HYBRID_ENABLED", true),
+		FiberPort:                  getEnv("FIBER_PORT", "8080"),
+		ReadTimeout:                getEnvDuration("FIBER_READ_TIMEOUT", 30*time.Second),
+		WriteTimeout:               getEnvDuration("FIBER_WRITE_TIMEOUT", 120*time.Second),
+		IdleTimeout:                getEnvDuration("FIBER_IDLE_TIMEOUT", 60*time.Second),
+		VLLMTimeout:                getEnvDuration("VLLM_TIMEOUT", 120*time.Second),
+		EmbedTimeout:               getEnvDuration("EMBED_TIMEOUT", 60*time.Second),
+		QdrantHost:                 normalizeHostPort(getEnv("QDRANT_HOST", "qdrant-service"), 6334),
+		QdrantMaxCallRecvMsgSizeKB: getEnvPositiveInt("QDRANT_MAX_CALL_RECV_MSG_KB", 8192),
+		QdrantScoreThreshold:       getEnvFloat32("QDRANT_SCORE_THRESHOLD", 0),
+		QdrantNeighborStitch:       getEnvBool("QDRANT_NEIGHBOR_STITCH", true),
+		QdrantMMREnabled:           getEnvBool("QDRANT_MMR_ENABLED", true),
+		QdrantMMRLambda:            getEnvFloat32("QDRANT_MMR_LAMBDA", 0.7),
+		QdrantMMROverfetch:         getEnvInt("QDRANT_MMR_OVERFETCH", 3),
+		QdrantHybridEnabled:        getEnvBool("QDRANT_HYBRID_ENABLED", true),
 		// Set to "" only for legacy collections created with a single unnamed dense vector.
 		QdrantDenseVectorName:     getEnvAllowEmpty("QDRANT_DENSE_VECTOR_NAME", "dense"),
 		QdrantSparseVectorName:    getEnv("QDRANT_SPARSE_VECTOR_NAME", "sparse"),
@@ -208,5 +210,13 @@ func getEnvInt(key string, fallback int) int {
 		return fallback
 	}
 
+	return i
+}
+
+func getEnvPositiveInt(key string, fallback int) int {
+	i := getEnvInt(key, fallback)
+	if i <= 0 {
+		return fallback
+	}
 	return i
 }
