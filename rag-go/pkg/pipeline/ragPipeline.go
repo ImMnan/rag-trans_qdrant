@@ -258,6 +258,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		chunks, err := p.qdrant.QueryStandardAll(ctx, p.changeCollection, req.RepoID, req.Component, req.FromDate, req.ToDate, p.changeDateField)
 		if err != nil {
 			p.log.Warn().Err(err).Str("collection", p.changeCollection).Msg("qdrant query failed")
+			return nil, fmt.Errorf("qdrant change retrieval failed: %w", err)
 		}
 		retrievedChangeCount = len(chunks)
 		changeChunks = chunks
@@ -282,6 +283,7 @@ func (p *RAGPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 		chunks, err := p.qdrant.Query(ctx, p.codeCollection, vectors.dense, vectors.sparseIndices, vectors.sparseValues, req.RepoID, req.Component, queryLimit)
 		if err != nil {
 			p.log.Warn().Err(err).Str("collection", p.codeCollection).Msg("qdrant query failed")
+			return nil, fmt.Errorf("qdrant code retrieval failed: %w", err)
 		}
 		retrievedCodeCount = len(chunks)
 		req.ReportProgress("qdrant_query_complete", "Qdrant query complete", 25)
@@ -451,9 +453,11 @@ func (p *DOCPipeline) Execute(ctx context.Context, req Request) (*Response, erro
 
 	if codeResult.err != nil {
 		p.log.Warn().Err(codeResult.err).Str("collection", p.codeCollection).Msg("qdrant query failed")
+		return nil, fmt.Errorf("qdrant code retrieval failed: %w", codeResult.err)
 	}
 	if docResult.err != nil {
 		p.log.Warn().Err(docResult.err).Str("collection", p.docCollection).Msg("qdrant query failed")
+		return nil, fmt.Errorf("qdrant documentation retrieval failed: %w", docResult.err)
 	}
 
 	retrievedCodeCount := len(codeResult.chunks)

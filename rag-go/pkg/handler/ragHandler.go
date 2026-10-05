@@ -9,6 +9,8 @@ import (
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/rs/zerolog"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/immnan/rag-trans_qdrant/rag-go/pkg/pipeline"
 )
@@ -126,7 +128,7 @@ func (rp *ragHandler) handleRAG(c fiber.Ctx) error {
 	result, err := rp.pipe.Execute(c.Context(), pipelineRequest)
 	if err != nil {
 		rp.log.Error().Err(err).Str("repo_id", req.RepoID).Msg("pipeline execution failed")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "pipeline failed"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": pipelineErrorMessage(err)})
 	}
 
 	return c.JSON(result)
@@ -176,7 +178,7 @@ func (dp *docHandler) handleRAG(c fiber.Ctx) error {
 	result, err := dp.pipe.Execute(c.Context(), pipelineRequest)
 	if err != nil {
 		dp.log.Error().Err(err).Str("repo_id", req.RepoID).Str("component", req.Component).Msg("pipeline execution failed")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "pipeline failed"})
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": pipelineErrorMessage(err)})
 	}
 
 	return c.JSON(result)
@@ -213,12 +215,19 @@ func streamPipelineResponse(c fiber.Ctx, execute func(pipeline.ProgressReporter)
 			writeSSE(w, "progress", event)
 		})
 		if err != nil {
-			writeSSE(w, "error", fiber.Map{"error": "pipeline failed"})
+			writeSSE(w, "error", fiber.Map{"error": pipelineErrorMessage(err)})
 			return
 		}
 
 		writeSSE(w, "complete", result)
 	})
+}
+
+func pipelineErrorMessage(err error) string {
+	if status.Code(err) == codes.ResourceExhausted && strings.Contains(err.Error(), "received message larger than max") {
+		return "pipeline failed: retrieved context exceeds the Qdrant gRPC response size limit; no answer was generated"
+	}
+	return "pipeline failed"
 }
 
 func writeSSE(w *bufio.Writer, event string, payload any) {

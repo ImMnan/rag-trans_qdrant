@@ -162,6 +162,11 @@ Date filtering includes both requested boundary dates and combines precise `date
 and `date_short` matches (plus a configured custom timestamp field). It never adds
 month-wide matches. `CHANGE_DATE_FIELD=month` uses `date` and `date_short` instead;
 payloads with only `month` cannot establish membership in a day-level window.
+Qdrant retrieval failures stop the pipeline before generation, even when partial
+chunks are available. Normal requests return HTTP 500 with an `error` field;
+streaming requests emit an `error` event instead of `complete`. Oversized Qdrant
+responses report that retrieved context exceeds the gRPC response size limit,
+not the LLM context window. No answer is generated from failed retrieval.
 Batch summaries and merge calls run concurrently, with at most four vLLM requests in flight per query.
 If a batch still exceeds the context limit, Orca splits and retries that batch.
 The response's `sources.change_batches` value reports the number of initial batches
