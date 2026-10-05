@@ -76,7 +76,10 @@ func NewClient(host string, scoreThreshold float32, neighborStitch, mmrEnabled b
 
 func dialWithRetry(host string, log zerolog.Logger) (*grpc.ClientConn, error) {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		conn, err := grpc.NewClient(host, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, err := grpc.NewClient(host,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithDefaultCallOptions(grpc.MaxCallRecvMsgSize(32*1024*1024)),
+		)
 		if err == nil {
 			log.Info().Str("host", host).Msg("qdrant gRPC connection established")
 			return conn, nil
