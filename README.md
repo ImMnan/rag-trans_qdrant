@@ -205,6 +205,7 @@ related Qdrant settings are:
 
 | Setting | Default | Purpose |
 | --- | --- | --- |
+| `QDRANT_MAX_CALL_RECV_MSG_SIZE` | `16384` | Maximum Qdrant gRPC response message size in KiB (16 MiB). |
 | `QDRANT_HYBRID_ENABLED` | `true` | Request BM25 query vectors and use hybrid retrieval when supported by the embed client. |
 | `QDRANT_DENSE_VECTOR_NAME` | `dense` | Named dense vector; set to an empty value only for legacy collections with an unnamed dense vector. |
 | `QDRANT_SPARSE_VECTOR_NAME` | `sparse` | Named sparse vector in Qdrant. |
