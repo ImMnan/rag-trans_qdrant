@@ -2,7 +2,9 @@ package handler
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -17,21 +19,25 @@ import (
 
 // Register mounts all routes onto the Fiber app.
 func Register(app *fiber.App, ragPipe *pipeline.RAGPipeline, docPipe *pipeline.DOCPipeline, log zerolog.Logger) {
-	rp := &ragHandler{pipe: ragPipe, log: log}
-	dp := &docHandler{pipe: docPipe, log: log}
+	requests := &requestRegistry{active: make(map[string]*activeRequest)}
+	rp := &ragHandler{pipe: ragPipe, log: log, requests: requests}
+	dp := &docHandler{pipe: docPipe, log: log, requests: requests}
 	app.Post("/api/v1/rag-go", rp.handleRAG)
+	app.Post("/api/v1/rag-go/requests/:request_id/cancel", requests.handleCancel)
 	app.Get("/health", handleHealth)
 	app.Post("/api/v1/rag-go/generate-doc", dp.handleRAG)
 }
 
 type ragHandler struct {
-	pipe *pipeline.RAGPipeline
-	log  zerolog.Logger
+	pipe     *pipeline.RAGPipeline
+	log      zerolog.Logger
+	requests *requestRegistry
 }
 
 type docHandler struct {
-	pipe *pipeline.DOCPipeline
-	log  zerolog.Logger
+	pipe     *pipeline.DOCPipeline
+	log      zerolog.Logger
+	requests *requestRegistry
 }
 
 // RAGRequest mirrors the JSON body expected by the API.
@@ -117,21 +123,14 @@ func (rp *ragHandler) handleRAG(c fiber.Ctx) error {
 		FromDate:   req.FromDate,
 		ToDate:     req.ToDate,
 	}
-	if stream {
-		requestContext := c.Context()
-		return streamPipelineResponse(c, func(progress pipeline.ProgressReporter) (*pipeline.Response, error) {
-			pipelineRequest.Progress = progress
-			return rp.pipe.Execute(requestContext, pipelineRequest)
-		})
-	}
-
-	result, err := rp.pipe.Execute(c.Context(), pipelineRequest)
-	if err != nil {
-		rp.log.Error().Err(err).Str("repo_id", req.RepoID).Msg("pipeline execution failed")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": pipelineErrorMessage(err)})
-	}
-
-	return c.JSON(result)
+	return rp.requests.respond(c, stream, func(ctx context.Context, progress pipeline.ProgressReporter) (*pipeline.Response, error) {
+		pipelineRequest.Progress = progress
+		result, err := rp.pipe.Execute(ctx, pipelineRequest)
+		if err != nil && !isCancellation(err) {
+			rp.log.Error().Err(err).Str("repo_id", req.RepoID).Msg("pipeline execution failed")
+		}
+		return result, err
+	})
 }
 
 func (dp *docHandler) handleRAG(c fiber.Ctx) error {
@@ -167,21 +166,14 @@ func (dp *docHandler) handleRAG(c fiber.Ctx) error {
 		TokenLimit: req.TokenLimit,
 		Component:  req.Component,
 	}
-	if stream {
-		requestContext := c.Context()
-		return streamPipelineResponse(c, func(progress pipeline.ProgressReporter) (*pipeline.Response, error) {
-			pipelineRequest.Progress = progress
-			return dp.pipe.Execute(requestContext, pipelineRequest)
-		})
-	}
-
-	result, err := dp.pipe.Execute(c.Context(), pipelineRequest)
-	if err != nil {
-		dp.log.Error().Err(err).Str("repo_id", req.RepoID).Str("component", req.Component).Msg("pipeline execution failed")
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": pipelineErrorMessage(err)})
-	}
-
-	return c.JSON(result)
+	return dp.requests.respond(c, stream, func(ctx context.Context, progress pipeline.ProgressReporter) (*pipeline.Response, error) {
+		pipelineRequest.Progress = progress
+		result, err := dp.pipe.Execute(ctx, pipelineRequest)
+		if err != nil && !isCancellation(err) {
+			dp.log.Error().Err(err).Str("repo_id", req.RepoID).Str("component", req.Component).Msg("pipeline execution failed")
+		}
+		return result, err
+	})
 }
 
 func handleHealth(c fiber.Ctx) error {
@@ -199,28 +191,37 @@ func streamRequested(c fiber.Ctx) (bool, error) {
 	}
 }
 
-func streamPipelineResponse(c fiber.Ctx, execute func(pipeline.ProgressReporter) (*pipeline.Response, error)) error {
+func streamPipelineResponse(c fiber.Ctx, requestID string, execute func(pipeline.ProgressReporter) (*pipeline.Response, error)) error {
 	c.Set(fiber.HeaderContentType, "text/event-stream")
 	c.Set(fiber.HeaderCacheControl, "no-cache")
 	c.Set("X-Accel-Buffering", "no")
 
 	return c.SendStreamWriter(func(w *bufio.Writer) {
-		writeSSE(w, "progress", pipeline.ProgressEvent{
-			Stage:   "request_received",
-			Message: "Request received",
-			Percent: 0,
+		writeSSE(w, "progress", fiber.Map{
+			"stage":      "request_received",
+			"message":    "Request received",
+			"percent":    0,
+			"request_id": requestID,
 		})
 
 		result, err := execute(func(event pipeline.ProgressEvent) {
 			writeSSE(w, "progress", event)
 		})
 		if err != nil {
+			if isCancellation(err) {
+				writeSSE(w, "cancelled", fiber.Map{"request_id": requestID, "status": "cancelled"})
+				return
+			}
 			writeSSE(w, "error", fiber.Map{"error": pipelineErrorMessage(err)})
 			return
 		}
 
 		writeSSE(w, "complete", result)
 	})
+}
+
+func isCancellation(err error) bool {
+	return errors.Is(err, context.Canceled) || status.Code(err) == codes.Canceled
 }
 
 func pipelineErrorMessage(err error) string {

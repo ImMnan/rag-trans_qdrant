@@ -130,8 +130,8 @@ curl -N -X POST "http://orca-infer.ai/api/v1/rag-go?stream=true" \
      -d '{"query_text":"What changed?","repo_id":"github.com/example/repo","type":"direct"}'
 ```
 
-The response emits `progress` events followed by exactly one terminal `complete` or
-`error` event. A `progress` event uses this stable shape:
+The response emits `progress` events followed by exactly one terminal `complete`,
+`error`, or `cancelled` event. A `progress` event uses this stable shape:
 
 ```json
 {"stage":"qdrant_query_complete","message":"Qdrant query complete","percent":35}
@@ -153,6 +153,65 @@ Use a stable, snake-case stage name and a percentage that never decreases within
 single workflow. The handler owns the terminal `complete` event, so pipeline code
 should only report work milestones. Without `stream=true`, the endpoints retain the
 original single JSON response.
+
+### Request cancellation
+
+Both `/api/v1/rag-go` and `/api/v1/rag-go/generate-doc` accept an optional
+`X-Request-ID` UUID header. Orca generates a UUID when it is omitted and returns
+the canonical UUID in the `X-Request-ID` response header. The first SSE progress
+event (`request_received`) also includes `request_id`. Other progress events and
+successful response bodies are unchanged.
+
+Generate a UUID on the caller before submitting a non-streaming request so it is
+available for cancellation while the response is pending:
+
+```sh
+curl -X POST "http://orca-infer.ai/api/v1/rag-go" \
+     -H "Content-Type: application/json" \
+     -H "X-Request-ID: 8b8047e6-8363-4382-93e3-1ad99f75adf3" \
+     -d '{"query_text":"What changed?","repo_id":"github.com/example/repo","type":"standard"}'
+```
+
+From a separate connection, cancel that request:
+
+```sh
+curl -X POST "http://orca-infer.ai/api/v1/rag-go/requests/8b8047e6-8363-4382-93e3-1ad99f75adf3/cancel"
+```
+
+The cancel endpoint returns HTTP 202:
+
+```json
+{"request_id":"8b8047e6-8363-4382-93e3-1ad99f75adf3","status":"cancellation_requested"}
+```
+
+Cancellation is cooperative: 202 acknowledges the signal, not that every remote
+worker has stopped. Orca cancels the pipeline context, including in-flight
+embedding, reranking, Qdrant, and vLLM calls. Remote model servers may continue
+computing after their connection is cancelled; verify their abort behavior
+separately. Client disconnects alone are not guaranteed to cancel Fiber work.
+
+The original non-streaming request ends with HTTP 409 and
+`{"request_id":"...","status":"cancelled"}`. An SSE request keeps HTTP 200 and
+ends with a `cancelled` event containing the same JSON instead of `complete` or
+`error`. A cancellation accepted before execution finishes takes precedence over
+the result, even if a downstream call completes at the same time.
+
+Invalid UUIDs return HTTP 400. Starting another request with an already-active ID
+returns HTTP 409. Repeated cancel calls return 202 while execution is still active;
+unknown or finished IDs return HTTP 404. IDs are removed when execution exits,
+including stream callbacks, so there is no retained job history. Prefer a new UUID
+for each request to avoid a late cancel targeting a reused ID. If cancelling
+immediately after submission returns 404, the original request may not yet be
+registered; wait for its initial SSE event or retry while it is still pending.
+
+The registry is in memory and local to one Orca process. Current deployment
+manifests use one replica. With multiple replicas, route cancellation to the owning
+instance or introduce cross-instance coordination/pub/sub; a shared ID store alone
+cannot invoke another process's cancel function. This API has no built-in user
+authentication: the trusted gateway must authorize cancellation against request
+ownership and prevent cross-user ID collisions. A UUID is not authorization. For
+browser clients crossing origins, the gateway must also allow the `X-Request-ID`
+request header and expose the response header through its CORS policy.
 
 Standard change-summary requests (`type: "standard"`) retrieve all change chunks in
 the requested date range without dropping chunks to fit the model context window. If
