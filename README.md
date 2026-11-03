@@ -98,6 +98,82 @@ make help
 make clean
 ```
 
+### Feedback service
+
+The independent Go module in [feedback/](feedback/) accepts feedback at
+`POST /api/v1/rag-go/feedback`. It does not call Qdrant, embedding services,
+vLLM, or Orca; the UI supplies the original request and completed response.
+
+Run and test it separately from Orca:
+
+```bash
+cd feedback
+go test ./...
+FIBER_PORT=8081 go run .
+```
+
+`FIBER_PORT` defaults to `8080`. `GET /health` reports the service as
+`orca-feedback`. `LOG_VERBOSE=true` enables debug logging. To build a separately
+versioned binary:
+
+```bash
+cd feedback
+go build -ldflags="-s -w -X main.orcaVersion=0.1.0" -o /tmp/orca-feedback .
+```
+
+Example feedback submission:
+
+```bash
+curl -X POST http://localhost:8081/api/v1/rag-go/feedback \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "workflow": "direct",
+    "request_id": "8b8047e6-8363-4382-93e3-1ad99f75adf3",
+    "request": {
+      "query_text": "How do I deploy?",
+      "repo_id": "github.com/example/repo",
+      "type": "direct",
+      "limit": 5
+    },
+    "response": {
+      "answer": "Follow these deployment steps...",
+      "type": "direct",
+      "sources": {"code_chunks_retrieved": 3, "change_chunks_retrieved": 0},
+      "meta": {
+        "repo_id": "github.com/example/repo",
+        "query_text": "How do I deploy?",
+        "context_truncation_enabled": true,
+        "context_truncation_active": false
+      }
+    },
+    "feedback": {"rating": "down", "comment": "Missing configuration steps."}
+  }'
+```
+
+- `workflow`: `standard`, `direct`, or `generate-doc`. This field distinguishes
+  document generation even though its response has an empty `type`.
+- `request_id`: optional correlation ID from Orca's `X-Request-ID` header.
+- `request`: the original Orca request. RAG fields include `query_text`,
+  `repo_id`, `repo_name`, `type`, `limit`, `token_limit`, `component`,
+  `from_date`, and `to_date`. Document requests use the same fields except
+  `type` and the date filters. At least `repo_id` or `component` is required.
+  Feedback ingestion does not apply Orca's defaults or regenerate the answer.
+- `response`: the full Orca JSON response, or the payload of the SSE `complete`
+  event (not the SSE text or progress events). All workflows use `answer`,
+  `type`, `sources`, and `meta`. For document generation, leave `answer` as the
+  JSON-encoded string Orca returned, rather than converting it to an object.
+- `feedback.rating`: required `up` or `down`; `feedback.comment` is optional.
+
+[processFeedback](feedback/feedbackHandler.go) is the extension point for a
+future database implementation; it receives the validated request, response,
+feedback, workflow, and optional request ID. It currently returns **501 Not
+Implemented**, so submissions are not acknowledged as saved or persisted.
+After the hook succeeds, the endpoint returns **200** with
+`{"status":"received"}`. Invalid payloads return **400**; processing failures
+return **500** with a generic error. Logs contain processing metadata, not
+the submitted request, answer, or comment. Authentication and public routing
+should be handled by the existing UI/API gateway.
+
 ### Retrieval diversity
 
 Qdrant retrieval uses maximal marginal relevance (MMR) by default. It fetches
