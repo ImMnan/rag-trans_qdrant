@@ -2,7 +2,7 @@
 # BUILD STAGE: Compile Go binary
 # Build context: repo root (docker build -f container/Containerfile .)
 # ==========================================
-FROM golang:1.26 AS builder
+FROM golang:1.27.3 AS builder
 
 WORKDIR /build
 

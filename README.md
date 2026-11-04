@@ -121,6 +121,57 @@ cd feedback
 go build -ldflags="-s -w -X main.orcaVersion=0.1.0" -o /tmp/orca-feedback .
 ```
 
+Build and publish the feedback image independently from the repository root
+using `SERVICE=feedback` and its own version:
+
+```bash
+make build-image SERVICE=feedback VERSION=0.1.0
+docker login
+make push-image SERVICE=feedback VERSION=0.1.0
+```
+
+Or build and push in one command (the push runs only after a successful build):
+
+```bash
+make release SERVICE=feedback VERSION=0.1.0
+```
+
+These commands publish `immnan/orca-feedback:0.1.0` without building or
+publishing Orca. Omitting `SERVICE` preserves the default Orca targets.
+`VERSION` is required for either service and is embedded in the binary.
+To build only the feedback Linux binary:
+
+```bash
+make build-binary SERVICE=feedback VERSION=0.1.0
+```
+
+The output is `bin/orca-feedback-linux-amd64`. The equivalent direct image
+build command is:
+
+```bash
+docker build --platform linux/amd64 \
+  -f container/Containerfile.feedback \
+  --build-arg VERSION=0.1.0 \
+  -t immnan/orca-feedback:0.1.0 .
+```
+
+The image contains only the feedback service and runs as non-root UID/GID
+`65532:65532`. Set `FEEDBACK_OUTPUT_DIR` explicitly and mount a writable
+directory at that path. For example, with an existing local directory writable
+by UID/GID 65532:
+
+```bash
+docker run --rm -p 127.0.0.1:8081:8080 \
+  -e FEEDBACK_OUTPUT_DIR=/mnt/feedback \
+  --mount type=bind,src=/absolute/path/to/feedback-data,dst=/mnt/feedback \
+  immnan/orca-feedback:0.1.0
+```
+
+In Kubernetes, mount the GCS FUSE volume at `/mnt/feedback`, set the same
+environment variable, and configure mount permissions for the non-root user.
+The image does not mount GCS itself. Configure an HTTP liveness probe against
+`GET /health` on port 8080; the distroless image has no shell or curl.
+
 Example feedback submission:
 
 ```bash
