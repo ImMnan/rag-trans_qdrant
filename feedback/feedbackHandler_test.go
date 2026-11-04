@@ -38,6 +38,9 @@ func TestFeedbackRejectsInvalidPayloads(t *testing.T) {
 		{"missing feedback", replacePayload(t, func(s *FeedbackSubmission) { s.Feedback = nil }), "feedback.rating"},
 		{"empty rating", replacePayload(t, func(s *FeedbackSubmission) { s.Feedback.Rating = "" }), "feedback.rating"},
 		{"invalid rating", replacePayload(t, func(s *FeedbackSubmission) { s.Feedback.Rating = "yes" }), "feedback.rating"},
+		{"missing request ID", replacePayload(t, func(s *FeedbackSubmission) { s.RequestID = "" }), "request_id"},
+		{"traversal request ID", replacePayload(t, func(s *FeedbackSubmission) { s.RequestID = "../outside" }), "request_id"},
+		{"uppercase request ID", replacePayload(t, func(s *FeedbackSubmission) { s.RequestID = strings.ToUpper(s.RequestID) }), "request_id"},
 		{"wrong request shape", strings.Replace(standardPayload, `"request": {`, `"request": [{"invalid":true}], "unused": {`, 1), "invalid JSON"},
 		{"wrong response shape", strings.Replace(standardPayload, `"sources": {`, `"sources": "invalid", "unused": {`, 1), "invalid JSON"},
 		{"doc answer object", strings.Replace(directPayload, `"answer": "Follow these steps.\nRun the deployment."`, `"answer": {"title":"Deploy"}`, 1), "invalid JSON"},
@@ -50,6 +53,7 @@ func TestFeedbackRejectsInvalidPayloads(t *testing.T) {
 			}, zerolog.Nop())
 			request := httptest.NewRequest(http.MethodPost, "/api/v1/rag-go/feedback", strings.NewReader(tt.body))
 			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-User-ID", "keycloak-subject")
 			response, err := app.Test(request)
 			if err != nil {
 				t.Fatal(err)
@@ -87,7 +91,9 @@ func TestFeedbackProcessingErrors(t *testing.T) {
 		status  int
 		message string
 	}{
-		{"not implemented", processFeedback, http.StatusNotImplemented, ErrFeedbackNotImplemented.Error()},
+		{"duplicate", func(context.Context, FeedbackSubmission) error {
+			return ErrFeedbackExists
+		}, http.StatusConflict, "feedback already exists for request_id"},
 		{"database failure", func(context.Context, FeedbackSubmission) error {
 			return errors.New("private database connection details")
 		}, http.StatusInternalServerError, "feedback processing failed"},
@@ -96,10 +102,12 @@ func TestFeedbackProcessingErrors(t *testing.T) {
 			app := newApp(tt.process, zerolog.Nop())
 			request := httptest.NewRequest(http.MethodPost, "/api/v1/rag-go/feedback", strings.NewReader(standardPayload))
 			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-User-ID", "keycloak-subject")
 			response, err := app.Test(request)
 			if err != nil {
 				t.Fatal(err)
 			}
+
 			defer response.Body.Close()
 			body, err := io.ReadAll(response.Body)
 			if err != nil {
@@ -107,6 +115,47 @@ func TestFeedbackProcessingErrors(t *testing.T) {
 			}
 			if response.StatusCode != tt.status || string(body) != `{"error":"`+tt.message+`"}` {
 				t.Fatalf("status=%d body=%s", response.StatusCode, body)
+			}
+		})
+	}
+}
+
+func TestFeedbackGatewayIdentity(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		userID string
+		status int
+	}{
+		{"missing header", "", http.StatusUnauthorized},
+		{"blank header", "   ", http.StatusUnauthorized},
+		{"trusted header", "verified-keycloak-sub", http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var received FeedbackSubmission
+			called := false
+			app := newApp(func(_ context.Context, submission FeedbackSubmission) error {
+				called = true
+				received = submission
+				return nil
+			}, zerolog.Nop())
+			body := replacePayload(t, func(s *FeedbackSubmission) { s.UserID = "spoofed-client-sub" })
+			request := httptest.NewRequest(http.MethodPost, "/api/v1/rag-go/feedback", strings.NewReader(body))
+			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-User-ID", tt.userID)
+			response, err := app.Test(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			response.Body.Close()
+			if response.StatusCode != tt.status {
+				t.Fatalf("status=%d", response.StatusCode)
+			}
+			if tt.status == http.StatusOK {
+				if !called || received.UserID != tt.userID {
+					t.Fatalf("trusted identity not forwarded: %+v", received)
+				}
+			} else if called {
+				t.Fatal("unauthenticated submission reached processor")
 			}
 		})
 	}

@@ -35,7 +35,11 @@ func main() {
 		Str("maintainer", "https://github.com/ImMnan").
 		Msg("starting Orca Feedback service")
 
-	app := newApp(processFeedback, log.Logger)
+	process, err := newFileProcessor(os.Getenv("FEEDBACK_OUTPUT_DIR"))
+	if err != nil {
+		log.Fatal().Err(err).Msg("invalid feedback output configuration")
+	}
+	app := newApp(process, log.Logger)
 
 	// --- Graceful shutdown ---
 	quit := make(chan os.Signal, 1)

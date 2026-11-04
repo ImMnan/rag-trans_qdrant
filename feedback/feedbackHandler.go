@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/gofiber/fiber/v3"
+	"github.com/google/uuid"
 	"github.com/rs/zerolog"
 )
 
@@ -49,7 +50,8 @@ type Feedback struct {
 
 type FeedbackSubmission struct {
 	Workflow  string        `json:"workflow"`
-	RequestID string        `json:"request_id,omitempty"`
+	RequestID string        `json:"request_id"`
+	UserID    string        `json:"user_id"`
 	Request   *OrcaRequest  `json:"request"`
 	Response  *OrcaResponse `json:"response"`
 	Feedback  *Feedback     `json:"feedback"`
@@ -57,19 +59,18 @@ type FeedbackSubmission struct {
 
 type FeedbackProcessor func(context.Context, FeedbackSubmission) error
 
-var ErrFeedbackNotImplemented = errors.New("feedback persistence is not implemented")
-
-func processFeedback(_ context.Context, _ FeedbackSubmission) error {
-	// Implement database persistence here; only return nil after processing succeeds.
-	return ErrFeedbackNotImplemented
-}
-
 func Register(app *fiber.App, process FeedbackProcessor, log zerolog.Logger) {
 	app.Post("/api/v1/rag-go/feedback", func(c fiber.Ctx) error {
+		// Only the authenticated gateway may reach this route and set this header.
+		userID := strings.TrimSpace(c.Get("X-User-ID"))
+		if userID == "" {
+			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "X-User-ID from the authenticated gateway is required"})
+		}
 		var submission FeedbackSubmission
 		if err := json.Unmarshal(c.Body(), &submission); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON request body"})
 		}
+		submission.UserID = userID
 		if err := submission.validate(); err != nil {
 			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
 		}
@@ -78,8 +79,8 @@ func Register(app *fiber.App, process FeedbackProcessor, log zerolog.Logger) {
 				Str("workflow", submission.Workflow).
 				Str("request_id", submission.RequestID).
 				Msg("feedback processing failed")
-			if errors.Is(err, ErrFeedbackNotImplemented) {
-				return c.Status(fiber.StatusNotImplemented).JSON(fiber.Map{"error": ErrFeedbackNotImplemented.Error()})
+			if errors.Is(err, ErrFeedbackExists) {
+				return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "feedback already exists for request_id"})
 			}
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "feedback processing failed"})
 		}
@@ -131,6 +132,17 @@ func (s FeedbackSubmission) validate() error {
 	}
 	if s.Feedback == nil || (s.Feedback.Rating != "up" && s.Feedback.Rating != "down") {
 		return errors.New("feedback.rating must be up or down")
+	}
+	if err := validateRequestID(s.RequestID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateRequestID(id string) error {
+	parsed, err := uuid.Parse(id)
+	if err != nil || parsed.String() != id {
+		return errors.New("request_id must be a canonical lowercase UUID")
 	}
 	return nil
 }

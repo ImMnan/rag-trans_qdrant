@@ -109,7 +109,7 @@ Run and test it separately from Orca:
 ```bash
 cd feedback
 go test ./...
-FIBER_PORT=8081 go run .
+FEEDBACK_OUTPUT_DIR=/tmp/orca-feedback-data FIBER_PORT=8081 go run .
 ```
 
 `FIBER_PORT` defaults to `8080`. `GET /health` reports the service as
@@ -126,6 +126,7 @@ Example feedback submission:
 ```bash
 curl -X POST http://localhost:8081/api/v1/rag-go/feedback \
   -H 'Content-Type: application/json' \
+  -H 'X-User-ID: verified-keycloak-subject' \
   -d '{
     "workflow": "direct",
     "request_id": "8b8047e6-8363-4382-93e3-1ad99f75adf3",
@@ -152,7 +153,10 @@ curl -X POST http://localhost:8081/api/v1/rag-go/feedback \
 
 - `workflow`: `standard`, `direct`, or `generate-doc`. This field distinguishes
   document generation even though its response has an empty `type`.
-- `request_id`: optional correlation ID from Orca's `X-Request-ID` header.
+- `request_id`: required canonical lowercase UUID from Orca's `X-Request-ID`
+  header. The saved filename is `<request_id>.json`.
+- `user_id`: added by the service from the trusted gateway's `X-User-ID` header.
+  Any client-supplied JSON `user_id` is overwritten.
 - `request`: the original Orca request. RAG fields include `query_text`,
   `repo_id`, `repo_name`, `type`, `limit`, `token_limit`, `component`,
   `from_date`, and `to_date`. Document requests use the same fields except
@@ -164,15 +168,43 @@ curl -X POST http://localhost:8081/api/v1/rag-go/feedback \
   JSON-encoded string Orca returned, rather than converting it to an object.
 - `feedback.rating`: required `up` or `down`; `feedback.comment` is optional.
 
-[processFeedback](feedback/feedbackHandler.go) is the extension point for a
-future database implementation; it receives the validated request, response,
-feedback, workflow, and optional request ID. It currently returns **501 Not
-Implemented**, so submissions are not acknowledged as saved or persisted.
-After the hook succeeds, the endpoint returns **200** with
-`{"status":"received"}`. Invalid payloads return **400**; processing failures
-return **500** with a generic error. Logs contain processing metadata, not
-the submitted request, answer, or comment. Authentication and public routing
-should be handled by the existing UI/API gateway.
+`FEEDBACK_OUTPUT_DIR` is required and must be an absolute path. Set it to the
+directory mounted from your GCS bucket, for example `/mnt/feedback`. Missing or
+invalid configuration prevents startup. The directory is created if absent;
+ensure the bucket is actually mounted before starting the pod, and give the
+pod's runtime user write permission and its GCS service account the required
+object permissions. Otherwise, a missing mount could lead to local-only files.
+
+[newFileProcessor](feedback/fileStore.go) writes the complete submission
+(request, response, feedback, workflow, request ID, and verified user ID) as
+indented JSON. Local directories use mode `0750` and files use `0600`; bucket
+access is controlled by GCS IAM, not these local modes. No access tokens are
+stored. The endpoint returns **200** with `{"status":"received"}` only after
+the file is written and successfully closed, which finalizes GCS FUSE uploads.
+Duplicate request IDs return **409** without replacing the original file.
+Invalid payloads return **400**, missing identity returns **401**, and storage
+failures return **500** with a generic error. Failed or interrupted writes may
+leave an incomplete or reserved file; inspect it before removing or retrying.
+Consumers should read only successfully acknowledged submissions.
+
+Use **one writer pod/mount** for this file-backed implementation. Exclusive
+file creation protects concurrent requests on a normal local filesystem, but
+GCS FUSE is not POSIX-compliant: this is not a distributed duplicate-prevention
+guarantee across mounts or replicas, nor an atomic publication guarantee for
+local readers. Configure a non-overlapping rollout strategy (for example
+`Recreate`). For strict multi-pod create-once semantics, use the GCS API with a
+generation-match precondition or a database instead. Actual GCS FUSE behavior
+must be validated against your deployed mount configuration.
+
+The API gateway must authenticate the Keycloak session/token, take the verified
+`sub` claim, **strip any incoming client `X-User-ID` header**, and set its own
+`X-User-ID` before forwarding. Restrict service access (for example with
+Kubernetes NetworkPolicy) so only this trusted gateway can submit feedback.
+This service trusts the header; it does not validate Keycloak tokens itself.
+The curl header above is for local testing, not proof of authentication.
+Use a single Keycloak realm; `sub` is issuer-scoped if multiple realms are used.
+Logs contain processing metadata, not the submitted request, answer, user ID,
+or comment. Restrict bucket access and configure retention for this user data.
 
 ### Retrieval diversity
 

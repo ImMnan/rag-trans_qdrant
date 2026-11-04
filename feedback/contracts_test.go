@@ -33,6 +33,7 @@ const standardPayload = `{
 
 const directPayload = `{
 	"workflow": "direct",
+	"request_id": "9b8047e6-8363-4382-93e3-1ad99f75adf3",
 	"request": {"query_text": "How do I deploy?", "component": "api", "type": "direct"},
 	"response": {
 		"answer": "Follow these steps.\nRun the deployment.", "type": "direct",
@@ -47,6 +48,7 @@ const directPayload = `{
 
 const docPayload = `{
 	"workflow": "generate-doc",
+	"request_id": "ab8047e6-8363-4382-93e3-1ad99f75adf3",
 	"request": {
 		"query_text": "Document deployment", "repo_id": "github.com/example/repo",
 		"repo_name": "repo", "limit": 25, "token_limit": 8192, "component": "api"
@@ -86,6 +88,7 @@ func TestFeedbackPreservesOrcaContracts(t *testing.T) {
 			}, zerolog.Nop())
 			request := httptest.NewRequest(http.MethodPost, "/api/v1/rag-go/feedback", strings.NewReader(tt.body))
 			request.Header.Set("Content-Type", "application/json")
+			request.Header.Set("X-User-ID", "keycloak-subject")
 			response, err := app.Test(request)
 			if err != nil {
 				t.Fatal(err)
@@ -112,6 +115,7 @@ func TestFeedbackPreservesOrcaContracts(t *testing.T) {
 			if err := json.Unmarshal(encoded, &forwarded); err != nil {
 				t.Fatal(err)
 			}
+			original.(map[string]any)["user_id"] = "keycloak-subject"
 			// Orca always emits response.type, even when the request omitted it.
 			if tt.name == "direct with omitted type" {
 				original.(map[string]any)["response"].(map[string]any)["type"] = ""
